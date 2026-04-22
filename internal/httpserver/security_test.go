@@ -13,7 +13,6 @@ import (
 
 	"github.com/ZenNotes/zennotes/apps/server/internal/config"
 	"github.com/ZenNotes/zennotes/apps/server/internal/vault"
-	"github.com/ZenNotes/zennotes/apps/server/internal/watcher"
 )
 
 func newTestServer(t *testing.T, cfg config.Config) (*httptest.Server, *vault.Vault) {
@@ -23,13 +22,8 @@ func newTestServer(t *testing.T, cfg config.Config) (*httptest.Server, *vault.Va
 	if err != nil {
 		t.Fatalf("vault.New: %v", err)
 	}
-	w, err := watcher.Start(v.Root())
-	if err != nil {
-		t.Fatalf("watcher.Start: %v", err)
-	}
-	t.Cleanup(func() { w.Close() })
 
-	server := httptest.NewServer(New(v, w, nil, cfg).Router())
+	server := httptest.NewServer(New(v, nil, nil, cfg).Router())
 	t.Cleanup(server.Close)
 	return server, v
 }
