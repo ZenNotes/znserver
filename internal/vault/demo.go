@@ -50,10 +50,10 @@ func (v *Vault) GenerateDemoTour() (DemoTourResult, error) {
 		if err != nil {
 			return DemoTourResult{}, err
 		}
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(abs), v.dirMode); err != nil {
 			return DemoTourResult{}, err
 		}
-		if err := os.WriteFile(abs, []byte(note.Body), 0o644); err != nil {
+		if err := os.WriteFile(abs, []byte(note.Body), v.fileMode); err != nil {
 			return DemoTourResult{}, err
 		}
 		result.NotePaths = append(result.NotePaths, filepath.ToSlash(note.Path))
@@ -63,10 +63,10 @@ func (v *Vault) GenerateDemoTour() (DemoTourResult, error) {
 		if err != nil {
 			return DemoTourResult{}, err
 		}
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(abs), v.dirMode); err != nil {
 			return DemoTourResult{}, err
 		}
-		if err := os.WriteFile(abs, []byte(asset.Body), 0o644); err != nil {
+		if err := os.WriteFile(abs, []byte(asset.Body), v.fileMode); err != nil {
 			return DemoTourResult{}, err
 		}
 		result.AssetPaths = append(result.AssetPaths, filepath.ToSlash(asset.Path))

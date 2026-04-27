@@ -26,10 +26,13 @@ func main() {
 	if strings.TrimSpace(cfg.AuthToken) == "" && !cfg.AllowInsecureNoAuth && !bindIsLoopback(cfg.Bind) {
 		log.Fatal("refusing to start without ZENNOTES_AUTH_TOKEN on a non-loopback bind; set ZENNOTES_ALLOW_INSECURE_NOAUTH=1 to override")
 	}
-	log.Printf("vault: %s", cfg.VaultPath)
-	log.Printf("bind:  %s", cfg.Bind)
+	logStartupBanner(cfg)
 
-	v, err := vault.New(cfg.VaultPath)
+	v, err := vault.New(cfg.VaultPath, vault.Options{
+		FileMode:      cfg.VaultFileMode,
+		DirMode:       cfg.VaultDirMode,
+		MaxAssetBytes: cfg.MaxAssetBytes,
+	})
 	if err != nil {
 		log.Fatalf("vault init: %v", err)
 	}
@@ -68,6 +71,10 @@ func main() {
 		}
 	}()
 
+	if !bindIsLoopback(cfg.Bind) && !cfg.BehindTLS {
+		go warnInsecureExposureLoop(ctx)
+	}
+
 	<-ctx.Done()
 	log.Printf("shutting down…")
 
@@ -76,13 +83,48 @@ func main() {
 	_ = httpSrv.Shutdown(shutdownCtx)
 }
 
+func logStartupBanner(cfg config.Config) {
+	log.Printf("vault:        %s", cfg.VaultPath)
+	log.Printf("bind:         %s", cfg.Bind)
+	authMode := "ZENNOTES_AUTH_TOKEN required"
+	if strings.TrimSpace(cfg.AuthToken) == "" {
+		authMode = "OPEN (no auth token set — anyone reachable can read/write)"
+	}
+	log.Printf("auth:         %s", authMode)
+	tlsMode := "behind TLS proxy (cookies marked Secure, HSTS sent)"
+	if !cfg.BehindTLS {
+		tlsMode = "plain HTTP (set ZENNOTES_BEHIND_TLS=1 once a TLS proxy is in front)"
+	}
+	log.Printf("tls:          %s", tlsMode)
+	if !bindIsLoopback(cfg.Bind) && !cfg.BehindTLS {
+		log.Printf("WARNING: bound to a non-loopback address without ZENNOTES_BEHIND_TLS=1.")
+		log.Printf("WARNING: put a TLS-terminating reverse proxy in front before exposing publicly.")
+	}
+}
+
+func warnInsecureExposureLoop(ctx context.Context) {
+	t := time.NewTicker(15 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			log.Printf("WARNING: still serving plain HTTP on a non-loopback bind; configure a TLS proxy and set ZENNOTES_BEHIND_TLS=1")
+		}
+	}
+}
+
 func bindIsLoopback(bind string) bool {
 	host, _, err := net.SplitHostPort(bind)
 	if err != nil {
 		host = bind
 	}
 	host = strings.Trim(host, "[]")
-	if host == "" || strings.EqualFold(host, "localhost") {
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,6 +19,10 @@ const (
 	internalVaultDir      = ".zennotes"
 	vaultSettingsFile     = "vault.json"
 )
+
+// ErrAssetTooLarge is returned when an asset upload exceeds the
+// vault's MaxAssetBytes limit.
+var ErrAssetTooLarge = errors.New("asset exceeds maximum size")
 
 var legacyAttachmentsDirs = []string{"_assets"}
 var reservedRootNames = map[string]struct{}{
@@ -84,19 +89,44 @@ func shouldHidePrimaryRootName(name string) bool {
 // It is concurrency-safe at the public-method level; internally most
 // ops do a short RW-lock dance around mutating operations.
 type Vault struct {
-	root string
-	mu   sync.RWMutex
+	root          string
+	fileMode      fs.FileMode
+	dirMode       fs.FileMode
+	maxAssetBytes int64
+	mu            sync.RWMutex
 }
 
-func New(root string) (*Vault, error) {
+// Options tunes vault filesystem permissions and limits. Zero values
+// fall back to a private-by-default profile (0o600 / 0o700, 50 MiB).
+type Options struct {
+	FileMode      fs.FileMode
+	DirMode       fs.FileMode
+	MaxAssetBytes int64
+}
+
+func New(root string, opts Options) (*Vault, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(abs, 0o755); err != nil {
+	if opts.FileMode == 0 {
+		opts.FileMode = 0o600
+	}
+	if opts.DirMode == 0 {
+		opts.DirMode = 0o700
+	}
+	if opts.MaxAssetBytes <= 0 {
+		opts.MaxAssetBytes = 50 << 20
+	}
+	if err := os.MkdirAll(abs, opts.DirMode); err != nil {
 		return nil, err
 	}
-	v := &Vault{root: abs}
+	v := &Vault{
+		root:          abs,
+		fileMode:      opts.FileMode,
+		dirMode:       opts.DirMode,
+		maxAssetBytes: opts.MaxAssetBytes,
+	}
 	if err := v.EnsureLayout(); err != nil {
 		return nil, err
 	}
@@ -291,18 +321,18 @@ func (v *Vault) GetSettings() (VaultSettings, error) {
 func (v *Vault) SetSettings(next VaultSettings) (VaultSettings, error) {
 	fallbackPrimary := v.inferPrimaryNotesLocation()
 	normalized := normalizeVaultSettings(next, fallbackPrimary)
-	if err := os.MkdirAll(filepath.Dir(v.settingsPath()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(v.settingsPath()), v.dirMode); err != nil {
 		return VaultSettings{}, err
 	}
 	data, err := json.MarshalIndent(normalized, "", "  ")
 	if err != nil {
 		return VaultSettings{}, err
 	}
-	if err := os.WriteFile(v.settingsPath(), data, 0o644); err != nil {
+	if err := os.WriteFile(v.settingsPath(), data, v.fileMode); err != nil {
 		return VaultSettings{}, err
 	}
 	if normalized.PrimaryNotesLocation == PrimaryNotesInbox {
-		if err := os.MkdirAll(filepath.Join(v.root, string(FolderInbox)), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(v.root, string(FolderInbox)), v.dirMode); err != nil {
 			return VaultSettings{}, err
 		}
 	}
@@ -339,7 +369,7 @@ func (v *Vault) EnsureLayout() error {
 		if f == FolderInbox && settings.PrimaryNotesLocation == PrimaryNotesRoot {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Join(v.root, string(f)), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(v.root, string(f)), v.dirMode); err != nil {
 			return err
 		}
 	}
@@ -348,12 +378,12 @@ func (v *Vault) EnsureLayout() error {
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(welcomeDir, 0o755); err != nil {
+		if err := os.MkdirAll(welcomeDir, v.dirMode); err != nil {
 			return err
 		}
 		welcome := filepath.Join(welcomeDir, "Welcome.md")
 		if _, err := os.Stat(welcome); errors.Is(err, os.ErrNotExist) {
-			_ = os.WriteFile(welcome, []byte(welcomeNote), 0o644)
+			_ = os.WriteFile(welcome, []byte(welcomeNote), v.fileMode)
 		}
 	}
 	return nil
@@ -667,10 +697,10 @@ func (v *Vault) WriteNote(rel, body string) (NoteMeta, error) {
 	if err != nil {
 		return NoteMeta{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(abs), v.dirMode); err != nil {
 		return NoteMeta{}, err
 	}
-	if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(abs, []byte(body), v.fileMode); err != nil {
 		return NoteMeta{}, err
 	}
 	folder, _ := v.folderOf(abs)
@@ -708,11 +738,11 @@ func (v *Vault) CreateNote(folder NoteFolder, title, subpath string) (NoteMeta, 
 		}
 		dir = sub
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, v.dirMode); err != nil {
 		return NoteMeta{}, err
 	}
 	abs := uniquePath(dir, title, ".md")
-	if err := os.WriteFile(abs, []byte(""), 0o644); err != nil {
+	if err := os.WriteFile(abs, []byte(""), v.fileMode); err != nil {
 		return NoteMeta{}, err
 	}
 	return v.readMeta(folder, abs)
@@ -775,7 +805,7 @@ func (v *Vault) moveToTop(rel string, target NoteFolder) (NoteMeta, error) {
 	if err != nil {
 		return NoteMeta{}, err
 	}
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	if err := os.MkdirAll(destDir, v.dirMode); err != nil {
 		return NoteMeta{}, err
 	}
 	newAbs := uniquePath(destDir, title, ".md")
@@ -809,7 +839,7 @@ func (v *Vault) DuplicateNote(rel string) (NoteMeta, error) {
 	folder, _ := v.folderOf(abs)
 	title := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs)) + " copy"
 	newAbs := uniquePath(filepath.Dir(abs), sanitizeFileStem(title), ".md")
-	if err := copyFile(abs, newAbs); err != nil {
+	if err := copyFile(abs, newAbs, v.fileMode); err != nil {
 		return NoteMeta{}, err
 	}
 	return v.readMeta(folder, newAbs)
@@ -836,7 +866,7 @@ func (v *Vault) MoveNote(rel string, target NoteFolder, targetSubpath string) (N
 		}
 		destDir = sub
 	}
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	if err := os.MkdirAll(destDir, v.dirMode); err != nil {
 		return NoteMeta{}, err
 	}
 	title := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
@@ -863,7 +893,7 @@ func (v *Vault) CreateFolder(folder NoteFolder, subpath string) error {
 	if err != nil {
 		return err
 	}
-	return os.MkdirAll(abs, 0o755)
+	return os.MkdirAll(abs, v.dirMode)
 }
 
 func (v *Vault) RenameFolder(folder NoteFolder, oldSub, newSub string) (string, error) {
@@ -881,7 +911,7 @@ func (v *Vault) RenameFolder(folder NoteFolder, oldSub, newSub string) (string, 
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(newAbs), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(newAbs), v.dirMode); err != nil {
 		return "", err
 	}
 	if err := os.Rename(oldAbs, newAbs); err != nil {
@@ -946,7 +976,7 @@ func (v *Vault) DuplicateFolder(folder NoteFolder, subpath string) (string, erro
 	parent := filepath.Dir(src)
 	baseName := filepath.Base(src) + " copy"
 	dst := uniqueDir(parent, baseName)
-	if err := copyDir(src, dst); err != nil {
+	if err := copyDir(src, dst, v.fileMode, v.dirMode); err != nil {
 		return "", err
 	}
 	settings, err := v.GetSettings()
@@ -1131,7 +1161,7 @@ func (v *Vault) SearchText(query string) ([]TextSearchMatch, error) {
 func (v *Vault) ImportAsset(notePath, filename string, body io.Reader) (ImportedAsset, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if err := os.MkdirAll(v.root, 0o755); err != nil {
+	if err := os.MkdirAll(v.root, v.dirMode); err != nil {
 		return ImportedAsset{}, err
 	}
 	safeName := sanitizeFileName(filename)
@@ -1141,13 +1171,20 @@ func (v *Vault) ImportAsset(notePath, filename string, body io.Reader) (Imported
 	ext := filepath.Ext(safeName)
 	stem := strings.TrimSuffix(safeName, ext)
 	abs := uniquePath(v.root, stem, ext)
-	f, err := os.Create(abs)
+	f, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, v.fileMode)
 	if err != nil {
 		return ImportedAsset{}, err
 	}
 	defer f.Close()
-	if _, err := io.Copy(f, body); err != nil {
+	limited := io.LimitReader(body, v.maxAssetBytes+1)
+	written, err := io.Copy(f, limited)
+	if err != nil {
+		_ = os.Remove(abs)
 		return ImportedAsset{}, err
+	}
+	if written > v.maxAssetBytes {
+		_ = os.Remove(abs)
+		return ImportedAsset{}, ErrAssetTooLarge
 	}
 	rel := filepath.ToSlash(filepath.Base(abs))
 	noteDir := filepath.Dir(filepath.FromSlash(notePath))
@@ -1238,13 +1275,13 @@ func uniqueDir(parent, base string) string {
 	}
 }
 
-func copyFile(src, dst string) error {
+func copyFile(src, dst string, mode fs.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.Create(dst)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
@@ -1253,20 +1290,30 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-func copyDir(src, dst string) error {
+func copyDir(src, dst string, fileMode, dirMode fs.FileMode) error {
 	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return ErrPathEscape
 		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
 		}
 		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
+		if info.IsDir() {
+			return os.MkdirAll(target, dirMode)
 		}
-		return copyFile(path, target)
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("unsupported file type in folder copy: %s", path)
+		}
+		return copyFile(path, target, fileMode)
 	})
 }
 

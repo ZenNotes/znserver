@@ -24,15 +24,26 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
+// Per-request body envelope allowances applied on top of the
+// configured note/asset size limits. They cover JSON keys + structural
+// overhead (writeNote) and multipart boundaries + form fields
+// (uploadAsset). Generous enough to never reject a payload that's
+// within the configured limit.
+const (
+	jsonEnvelopeBytes      int64 = 64 << 10  // 64 KiB
+	multipartOverheadBytes int64 = 256 << 10 // 256 KiB
+)
+
 type Server struct {
-	mu             sync.RWMutex
-	Config         config.Config
-	Vault          *vault.Vault
-	Watcher        *watcher.Watcher
-	Static         fs.FS // embedded web bundle, may be nil in dev
-	sessions       *sessionStore
-	loginLimiter   *attemptLimiter
+	mu              sync.RWMutex
+	Config          config.Config
+	Vault           *vault.Vault
+	Watcher         *watcher.Watcher
+	Static          fs.FS // embedded web bundle, may be nil in dev
+	sessions        *sessionStore
+	loginLimiter    *attemptLimiter
 	wsRejectLimiter *attemptLimiter
+	loggedOrigins   sync.Map // origin -> struct{}; dedupes CORS-rejection logs
 }
 
 func New(v *vault.Vault, w *watcher.Watcher, static fs.FS, cfg config.Config) *Server {
@@ -66,7 +77,12 @@ func (s *Server) currentConfig() config.Config {
 }
 
 func (s *Server) switchVaultRoot(nextPath string) (*vault.Vault, error) {
-	nextVault, err := vault.New(nextPath)
+	cfg := s.currentConfig()
+	nextVault, err := vault.New(nextPath, vault.Options{
+		FileMode:      cfg.VaultFileMode,
+		DirMode:       cfg.VaultDirMode,
+		MaxAssetBytes: cfg.MaxAssetBytes,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +96,7 @@ func (s *Server) switchVaultRoot(nextPath string) (*vault.Vault, error) {
 	s.Vault = nextVault
 	s.Watcher = nextWatcher
 	s.Config.VaultPath = nextVault.Root()
-	cfg := s.Config
+	cfg = s.Config
 	s.mu.Unlock()
 
 	if prevWatcher != nil {
@@ -93,8 +109,11 @@ func (s *Server) switchVaultRoot(nextPath string) (*vault.Vault, error) {
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(securityHeadersMiddleware)
+	// Intentionally not using middleware.RealIP: it rewrites
+	// r.RemoteAddr from X-Forwarded-For unconditionally, which would
+	// let any client spoof the rate-limit and audit identity.
+	// clientAddressKey() does trust-aware extraction instead.
+	r.Use(s.securityHeadersMiddleware)
 	r.Use(s.corsMiddleware)
 	r.Use(middleware.Recoverer)
 
@@ -135,6 +154,8 @@ func (s *Server) Router() http.Handler {
 }
 
 func (s *Server) registerProtectedRoutes(r chi.Router) {
+	r.Post("/session/rotate-token", s.sessionRotateToken)
+
 	r.Get("/vault", s.vaultInfo)
 	r.Get("/vault/settings", s.vaultSettings)
 	r.Post("/vault/settings", s.setVaultSettings)
@@ -205,7 +226,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		}
 
 		if strings.HasSuffix(r.URL.Path, "/watch") || r.URL.Path == "/watch" {
-			if !s.wsRejectLimiter.allow(clientAddressKey(r)) {
+			if !s.wsRejectLimiter.allow(s.clientAddressKey(r)) {
 				http.Error(w, "too many unauthorized websocket attempts", http.StatusTooManyRequests)
 				return
 			}
@@ -235,7 +256,7 @@ func writeError(w http.ResponseWriter, err error) {
 		return
 	}
 	log.Printf("handler error: %v", err)
-	http.Error(w, err.Error(), http.StatusInternalServerError)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
 func readJSON[T any](r *http.Request, out *T) error {
@@ -499,6 +520,8 @@ func (s *Server) readNote(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeNote(w http.ResponseWriter, r *http.Request) {
+	cfg := s.currentConfig()
+	r.Body = http.MaxBytesReader(w, r.Body, cfg.MaxNoteBytes+jsonEnvelopeBytes)
 	var req struct {
 		Path string `json:"path"`
 		Body string `json:"body"`
@@ -813,7 +836,9 @@ func (s *Server) rawAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(128 << 20); err != nil {
+	cfg := s.currentConfig()
+	r.Body = http.MaxBytesReader(w, r.Body, cfg.MaxAssetBytes+multipartOverheadBytes)
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -826,6 +851,10 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	asset, err := s.currentVault().ImportAsset(notePath, header.Filename, file)
 	if err != nil {
+		if errors.Is(err, vault.ErrAssetTooLarge) {
+			http.Error(w, "asset too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		writeError(w, err)
 		return
 	}
@@ -837,7 +866,7 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 func (s *Server) watchWS(w http.ResponseWriter, r *http.Request) {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin != "" && !s.isAllowedOrigin(r, origin) {
-		if !s.wsRejectLimiter.allow(clientAddressKey(r)) {
+		if !s.wsRejectLimiter.allow(s.clientAddressKey(r)) {
 			http.Error(w, "too many invalid websocket origins", http.StatusTooManyRequests)
 			return
 		}
