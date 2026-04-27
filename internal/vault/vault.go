@@ -1175,16 +1175,23 @@ func (v *Vault) ImportAsset(notePath, filename string, body io.Reader) (Imported
 	if err != nil {
 		return ImportedAsset{}, err
 	}
-	defer f.Close()
+	cleanupPartial := func() {
+		_ = f.Close()
+		_ = os.Remove(abs)
+	}
 	limited := io.LimitReader(body, v.maxAssetBytes+1)
 	written, err := io.Copy(f, limited)
 	if err != nil {
-		_ = os.Remove(abs)
+		cleanupPartial()
 		return ImportedAsset{}, err
 	}
 	if written > v.maxAssetBytes {
-		_ = os.Remove(abs)
+		cleanupPartial()
 		return ImportedAsset{}, ErrAssetTooLarge
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(abs)
+		return ImportedAsset{}, err
 	}
 	rel := filepath.ToSlash(filepath.Base(abs))
 	noteDir := filepath.Dir(filepath.FromSlash(notePath))
