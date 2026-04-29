@@ -1,6 +1,8 @@
 package vault
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +20,8 @@ const (
 	PrimaryAttachmentsDir = "attachements"
 	internalVaultDir      = ".zennotes"
 	vaultSettingsFile     = "vault.json"
+	noteCommentsDir       = "comments"
+	noteCommentsSuffix    = ".comments.json"
 )
 
 // ErrAssetTooLarge is returned when an asset upload exceeds the
@@ -265,6 +269,14 @@ func duplicateFolderIcons(
 
 func (v *Vault) settingsPath() string {
 	return filepath.Join(v.root, internalVaultDir, vaultSettingsFile)
+}
+
+func (v *Vault) commentsRoot() string {
+	return filepath.Join(v.root, internalVaultDir, noteCommentsDir)
+}
+
+func (v *Vault) commentsPath(rel string) (string, error) {
+	return SafeJoin(v.commentsRoot(), filepath.ToSlash(rel)+noteCommentsSuffix)
 }
 
 func (v *Vault) inferPrimaryNotesLocation() PrimaryNotesLocation {
@@ -707,6 +719,222 @@ func (v *Vault) WriteNote(rel, body string) (NoteMeta, error) {
 	return v.readMeta(folder, abs)
 }
 
+func newCommentID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return fmt.Sprintf("comment-%d", time.Now().UnixNano())
+}
+
+func normalizeComment(input NoteComment, notePath string) (NoteComment, bool) {
+	body := strings.TrimSpace(input.Body)
+	if body == "" {
+		return NoteComment{}, false
+	}
+	start := input.AnchorStart
+	if start < 0 {
+		start = 0
+	}
+	end := input.AnchorEnd
+	if end < 0 {
+		end = start
+	}
+	if end < start {
+		start, end = end, start
+	}
+	anchorText := strings.Join(strings.Fields(input.AnchorText), " ")
+	if len(anchorText) > 500 {
+		anchorText = anchorText[:500]
+	}
+	now := time.Now().UnixMilli()
+	createdAt := input.CreatedAt
+	if createdAt <= 0 {
+		createdAt = now
+	}
+	updatedAt := input.UpdatedAt
+	if updatedAt <= 0 {
+		updatedAt = now
+	}
+	id := strings.TrimSpace(input.ID)
+	if id == "" {
+		id = newCommentID()
+	}
+	return NoteComment{
+		ID:          id,
+		NotePath:    notePath,
+		AnchorStart: start,
+		AnchorEnd:   end,
+		AnchorText:  anchorText,
+		Body:        body,
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
+		ResolvedAt:  input.ResolvedAt,
+	}, true
+}
+
+func normalizeComments(inputs []NoteComment, notePath string) []NoteComment {
+	out := make([]NoteComment, 0, len(inputs))
+	seen := map[string]struct{}{}
+	for _, input := range inputs {
+		comment, ok := normalizeComment(input, notePath)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[comment.ID]; exists {
+			continue
+		}
+		seen[comment.ID] = struct{}{}
+		out = append(out, comment)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CreatedAt == out[j].CreatedAt {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt < out[j].CreatedAt
+	})
+	return out
+}
+
+func (v *Vault) readNoteCommentsLocked(rel string) ([]NoteComment, error) {
+	notePath := filepath.ToSlash(rel)
+	abs, err := v.commentsPath(notePath)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(abs)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []NoteComment{}, nil
+		}
+		return nil, err
+	}
+	var envelope struct {
+		Comments []NoteComment `json:"comments"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Comments != nil {
+		return normalizeComments(envelope.Comments, notePath), nil
+	}
+	var comments []NoteComment
+	if err := json.Unmarshal(raw, &comments); err != nil {
+		return []NoteComment{}, nil
+	}
+	return normalizeComments(comments, notePath), nil
+}
+
+func (v *Vault) ReadNoteComments(rel string) ([]NoteComment, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.readNoteCommentsLocked(rel)
+}
+
+func (v *Vault) writeNoteCommentsLocked(rel string, comments []NoteComment) ([]NoteComment, error) {
+	notePath := filepath.ToSlash(rel)
+	normalized := normalizeComments(comments, notePath)
+	abs, err := v.commentsPath(notePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(normalized) == 0 {
+		if err := os.Remove(abs); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		return []NoteComment{}, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), v.dirMode); err != nil {
+		return nil, err
+	}
+	data, err := json.MarshalIndent(struct {
+		Version  int           `json:"version"`
+		Comments []NoteComment `json:"comments"`
+	}{Version: 1, Comments: normalized}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(abs, data, v.fileMode); err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
+func (v *Vault) WriteNoteComments(rel string, comments []NoteComment) ([]NoteComment, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.writeNoteCommentsLocked(rel, comments)
+}
+
+func (v *Vault) removeNoteCommentsLocked(rel string) error {
+	abs, err := v.commentsPath(rel)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(abs); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (v *Vault) moveNoteCommentsLocked(oldRel, nextRel string) error {
+	oldAbs, err := v.commentsPath(oldRel)
+	if err != nil {
+		return err
+	}
+	nextAbs, err := v.commentsPath(nextRel)
+	if err != nil {
+		return err
+	}
+	if oldAbs == nextAbs {
+		return nil
+	}
+	if _, err := os.Stat(oldAbs); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(nextAbs), v.dirMode); err != nil {
+		return err
+	}
+	if _, err := os.Stat(nextAbs); err == nil {
+		existing, err := v.readNoteCommentsLocked(nextRel)
+		if err != nil {
+			return err
+		}
+		moving, err := v.readNoteCommentsLocked(oldRel)
+		if err != nil {
+			return err
+		}
+		if _, err := v.writeNoteCommentsLocked(nextRel, append(existing, moving...)); err != nil {
+			return err
+		}
+		return os.Remove(oldAbs)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(oldAbs, nextAbs)
+}
+
+func (v *Vault) copyNoteCommentsLocked(sourceRel, nextRel string) error {
+	source, err := v.readNoteCommentsLocked(sourceRel)
+	if err != nil {
+		return err
+	}
+	if len(source) == 0 {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	copyComments := make([]NoteComment, 0, len(source))
+	for _, comment := range source {
+		comment.ID = newCommentID()
+		comment.NotePath = filepath.ToSlash(nextRel)
+		comment.CreatedAt = now
+		comment.UpdatedAt = now
+		copyComments = append(copyComments, comment)
+	}
+	_, err = v.writeNoteCommentsLocked(nextRel, copyComments)
+	return err
+}
+
 func (v *Vault) folderOf(abs string) (NoteFolder, bool) {
 	rel, err := filepath.Rel(v.root, abs)
 	if err != nil {
@@ -765,7 +993,14 @@ func (v *Vault) RenameNote(rel, nextTitle string) (NoteMeta, error) {
 		return NoteMeta{}, err
 	}
 	folder, _ := v.folderOf(newAbs)
-	return v.readMeta(folder, newAbs)
+	meta, err := v.readMeta(folder, newAbs)
+	if err != nil {
+		return NoteMeta{}, err
+	}
+	if err := v.moveNoteCommentsLocked(rel, meta.Path); err != nil {
+		return NoteMeta{}, err
+	}
+	return meta, nil
 }
 
 func (v *Vault) DeleteNote(rel string) error {
@@ -775,7 +1010,10 @@ func (v *Vault) DeleteNote(rel string) error {
 	if err != nil {
 		return err
 	}
-	return os.Remove(abs)
+	if err := os.Remove(abs); err != nil {
+		return err
+	}
+	return v.removeNoteCommentsLocked(rel)
 }
 
 // --- Trash / Restore / Archive / Unarchive / Duplicate / Move ---
@@ -812,7 +1050,14 @@ func (v *Vault) moveToTop(rel string, target NoteFolder) (NoteMeta, error) {
 	if err := os.Rename(abs, newAbs); err != nil {
 		return NoteMeta{}, err
 	}
-	return v.readMeta(target, newAbs)
+	meta, err := v.readMeta(target, newAbs)
+	if err != nil {
+		return NoteMeta{}, err
+	}
+	if err := v.moveNoteCommentsLocked(rel, meta.Path); err != nil {
+		return NoteMeta{}, err
+	}
+	return meta, nil
 }
 
 func (v *Vault) EmptyTrash() error {
@@ -824,6 +1069,7 @@ func (v *Vault) EmptyTrash() error {
 		return nil
 	}
 	for _, e := range entries {
+		_ = v.removeNoteCommentsLocked(filepath.ToSlash(filepath.Join(string(FolderTrash), e.Name())))
 		_ = os.RemoveAll(filepath.Join(trashDir, e.Name()))
 	}
 	return nil
@@ -842,7 +1088,14 @@ func (v *Vault) DuplicateNote(rel string) (NoteMeta, error) {
 	if err := copyFile(abs, newAbs, v.fileMode); err != nil {
 		return NoteMeta{}, err
 	}
-	return v.readMeta(folder, newAbs)
+	meta, err := v.readMeta(folder, newAbs)
+	if err != nil {
+		return NoteMeta{}, err
+	}
+	if err := v.copyNoteCommentsLocked(rel, meta.Path); err != nil {
+		return NoteMeta{}, err
+	}
+	return meta, nil
 }
 
 func (v *Vault) MoveNote(rel string, target NoteFolder, targetSubpath string) (NoteMeta, error) {
@@ -874,7 +1127,14 @@ func (v *Vault) MoveNote(rel string, target NoteFolder, targetSubpath string) (N
 	if err := os.Rename(abs, newAbs); err != nil {
 		return NoteMeta{}, err
 	}
-	return v.readMeta(target, newAbs)
+	meta, err := v.readMeta(target, newAbs)
+	if err != nil {
+		return NoteMeta{}, err
+	}
+	if err := v.moveNoteCommentsLocked(rel, meta.Path); err != nil {
+		return NoteMeta{}, err
+	}
+	return meta, nil
 }
 
 // --- Folders ---

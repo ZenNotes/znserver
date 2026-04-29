@@ -170,6 +170,8 @@ func (s *Server) registerProtectedRoutes(r chi.Router) {
 	r.Post("/assets/upload", s.uploadAsset)
 
 	r.Get("/notes/read", s.readNote)
+	r.Get("/comments/read", s.readComments)
+	r.Post("/comments/write", s.writeComments)
 	r.Post("/notes/write", s.writeNote)
 	r.Post("/notes/create", s.createNote)
 	r.Post("/notes/rename", s.renameNote)
@@ -517,6 +519,33 @@ func (s *Server) readNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, note)
+}
+
+func (s *Server) readComments(w http.ResponseWriter, r *http.Request) {
+	rel := r.URL.Query().Get("path")
+	comments, err := s.currentVault().ReadNoteComments(rel)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, comments)
+}
+
+func (s *Server) writeComments(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path     string              `json:"path"`
+		Comments []vault.NoteComment `json:"comments"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	comments, err := s.currentVault().WriteNoteComments(req.Path, req.Comments)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, comments)
 }
 
 func (s *Server) writeNote(w http.ResponseWriter, r *http.Request) {

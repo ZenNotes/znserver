@@ -14,6 +14,8 @@ import (
 const (
 	internalVaultDir      = ".zennotes"
 	vaultSettingsFilePath = ".zennotes/vault.json"
+	noteCommentsPrefix    = ".zennotes/comments/"
+	noteCommentsSuffix    = ".comments.json"
 )
 
 // Watcher recursively watches the vault root and fans out change
@@ -119,6 +121,14 @@ func (w *Watcher) isVaultSettingsPath(absPath string) bool {
 	return w.relativePath(absPath) == vaultSettingsFilePath
 }
 
+func (w *Watcher) commentsNotePath(absPath string) (string, bool) {
+	rel := w.relativePath(absPath)
+	if !strings.HasPrefix(rel, noteCommentsPrefix) || !strings.HasSuffix(rel, noteCommentsSuffix) {
+		return "", false
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(rel, noteCommentsPrefix), noteCommentsSuffix), true
+}
+
 func (w *Watcher) handle(ev fsnotify.Event) {
 	base := filepath.Base(ev.Name)
 	if strings.HasPrefix(base, ".") && !w.isVaultSettingsPath(ev.Name) && base != internalVaultDir {
@@ -145,6 +155,23 @@ func (w *Watcher) handle(ev fsnotify.Event) {
 			Path:   relPosix,
 			Folder: vault.FolderInbox,
 			Scope:  "vault-settings",
+		})
+		return
+	}
+	if notePath, ok := w.commentsNotePath(ev.Name); ok {
+		kind := eventKind(ev)
+		if kind == "" {
+			return
+		}
+		folder, ok := vault.FolderForRelativePath(notePath)
+		if !ok {
+			folder = vault.FolderInbox
+		}
+		w.broadcast(vault.ChangeEvent{
+			Kind:   kind,
+			Path:   notePath,
+			Folder: folder,
+			Scope:  "comments",
 		})
 		return
 	}

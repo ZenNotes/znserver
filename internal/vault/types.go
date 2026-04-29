@@ -82,6 +82,19 @@ type NoteContent struct {
 	Body string `json:"body"`
 }
 
+// NoteComment — sidecar annotation/comment data for a note.
+type NoteComment struct {
+	ID          string `json:"id"`
+	NotePath    string `json:"notePath"`
+	AnchorStart int    `json:"anchorStart"`
+	AnchorEnd   int    `json:"anchorEnd"`
+	AnchorText  string `json:"anchorText"`
+	Body        string `json:"body"`
+	CreatedAt   int64  `json:"createdAt"`
+	UpdatedAt   int64  `json:"updatedAt"`
+	ResolvedAt  *int64 `json:"resolvedAt"`
+}
+
 // FolderEntry — mirrors shared/ipc.ts FolderEntry.
 type FolderEntry struct {
 	Folder       NoteFolder `json:"folder"`

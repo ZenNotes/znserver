@@ -122,6 +122,75 @@ func TestImportAssetReportsAtBoundary(t *testing.T) {
 	}
 }
 
+func TestNoteCommentsFollowRenameDuplicateAndDelete(t *testing.T) {
+	root := t.TempDir()
+	v, err := New(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := v.WriteNote("inbox/Alpha.md", "hello world")
+	if err != nil {
+		t.Fatal(err)
+	}
+	comments, err := v.WriteNoteComments(meta.Path, []NoteComment{{
+		AnchorStart: 0,
+		AnchorEnd:   5,
+		AnchorText:  "hello",
+		Body:        "Tighten this claim.",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comments) != 1 || comments[0].ID == "" {
+		t.Fatalf("comment was not normalized: %#v", comments)
+	}
+
+	renamed, err := v.RenameNote(meta.Path, "Beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldComments, err := v.ReadNoteComments(meta.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(oldComments) != 0 {
+		t.Fatalf("old sidecar still has comments: %#v", oldComments)
+	}
+	renamedComments, err := v.ReadNoteComments(renamed.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(renamedComments) != 1 || renamedComments[0].NotePath != renamed.Path {
+		t.Fatalf("comments did not follow rename: %#v", renamedComments)
+	}
+
+	duplicated, err := v.DuplicateNote(renamed.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicatedComments, err := v.ReadNoteComments(duplicated.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(duplicatedComments) != 1 || duplicatedComments[0].NotePath != duplicated.Path {
+		t.Fatalf("comments did not copy to duplicate: %#v", duplicatedComments)
+	}
+	if duplicatedComments[0].ID == renamedComments[0].ID {
+		t.Fatalf("duplicated note should get independent comment ids")
+	}
+
+	if err := v.DeleteNote(renamed.Path); err != nil {
+		t.Fatal(err)
+	}
+	deletedComments, err := v.ReadNoteComments(renamed.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deletedComments) != 0 {
+		t.Fatalf("comments should be removed with deleted note: %#v", deletedComments)
+	}
+}
+
 func TestReadNoteRefusesSymlinkOutsideVault(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on windows")
