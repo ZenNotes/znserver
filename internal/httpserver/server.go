@@ -107,17 +107,8 @@ func (s *Server) switchVaultRoot(nextPath string) (*vault.Vault, error) {
 }
 
 func (s *Server) Router() http.Handler {
-	r := chi.NewRouter()
-	r.Use(middleware.RequestID)
-	// Intentionally not using middleware.RealIP: it rewrites
-	// r.RemoteAddr from X-Forwarded-For unconditionally, which would
-	// let any client spoof the rate-limit and audit identity.
-	// clientAddressKey() does trust-aware extraction instead.
-	r.Use(s.securityHeadersMiddleware)
-	r.Use(s.corsMiddleware)
-	r.Use(middleware.Recoverer)
-
-	r.Route("/api", func(r chi.Router) {
+	inner := chi.NewRouter()
+	inner.Route("/api", func(r chi.Router) {
 		r.Get("/healthz", s.healthz)
 		r.Get("/version", s.version)
 		r.Get("/capabilities", s.capabilities)
@@ -134,23 +125,40 @@ func (s *Server) Router() http.Handler {
 
 	// Legacy root-level API compatibility. Keep this around so the web client
 	// still works during partial restarts or when an older bundle is cached.
-	r.Get("/healthz", s.healthz)
-	r.Get("/version", s.version)
-	r.Get("/capabilities", s.capabilities)
-	r.Get("/platform", s.platform)
-	r.Get("/session", s.sessionStatus)
-	r.Post("/session/login", s.sessionLogin)
-	r.Post("/session/logout", s.sessionLogout)
-	r.Group(func(r chi.Router) {
+	inner.Get("/healthz", s.healthz)
+	inner.Get("/version", s.version)
+	inner.Get("/capabilities", s.capabilities)
+	inner.Get("/platform", s.platform)
+	inner.Get("/session", s.sessionStatus)
+	inner.Post("/session/login", s.sessionLogin)
+	inner.Post("/session/logout", s.sessionLogout)
+	inner.Group(func(r chi.Router) {
 		r.Use(s.requireAuth)
 		s.registerProtectedRoutes(r)
 	})
 
 	// Static / PWA fallback.
 	if s.Static != nil {
-		r.Get("/*", s.serveStatic)
+		inner.Get("/*", s.serveStatic)
 	}
-	return r
+
+	outer := chi.NewRouter()
+	outer.Use(middleware.RequestID)
+	// Intentionally not using middleware.RealIP: it rewrites
+	// r.RemoteAddr from X-Forwarded-For unconditionally, which would
+	// let any client spoof the rate-limit and audit identity.
+	// clientAddressKey() does trust-aware extraction instead.
+	outer.Use(s.securityHeadersMiddleware)
+	outer.Use(s.corsMiddleware)
+	outer.Use(middleware.Recoverer)
+
+	basePath := s.currentConfig().BasePath
+	if basePath != "" {
+		outer.Mount(basePath, inner)
+		return outer
+	}
+	outer.Mount("/", inner)
+	return outer
 }
 
 func (s *Server) registerProtectedRoutes(r chi.Router) {
@@ -949,22 +957,119 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 	f, err := s.Static.Open(urlPath)
 	if err != nil {
 		// SPA fallback: serve index.html for unknown paths.
-		fallback, err2 := s.Static.Open("index.html")
-		if err2 != nil {
-			http.NotFound(w, r)
-			return
-		}
-		defer fallback.Close()
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = copyReadSeeker(w, fallback)
+		s.serveIndexHTML(w)
 		return
 	}
 	defer f.Close()
+	if urlPath == "index.html" {
+		s.serveIndexHTML(w)
+		return
+	}
 	ext := strings.ToLower(filepath.Ext(urlPath))
 	if t := mime.TypeByExtension(ext); t != "" {
 		w.Header().Set("Content-Type", t)
 	}
 	_, _ = copyReadSeeker(w, f)
+}
+
+// serveIndexHTML reads the SPA shell from the embedded bundle and
+// returns it with a small runtime patch so the JS bundle knows which
+// base path to use for API + WebSocket calls.
+func (s *Server) serveIndexHTML(w http.ResponseWriter) {
+	f, err := s.Static.Open("index.html")
+	if err != nil {
+		http.NotFound(w, nil)
+		return
+	}
+	defer f.Close()
+
+	body, err := readAll(f)
+	if err != nil {
+		http.NotFound(w, nil)
+		return
+	}
+
+	basePath := s.currentConfig().BasePath
+	if basePath != "" {
+		body = injectBasePathHint(body, basePath)
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(body)
+}
+
+func readAll(f fs.File) ([]byte, error) {
+	buf := make([]byte, 0, 4*1024)
+	tmp := make([]byte, 4*1024)
+	for {
+		n, err := f.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if err != nil {
+			if err.Error() == "EOF" {
+				return buf, nil
+			}
+			return nil, err
+		}
+	}
+}
+
+// injectBasePathHint splices a `<meta name="zn-base-path" ...>` tag into
+// the SPA shell so the bundled JS can route API calls through the
+// configured prefix. A meta tag (instead of an inline script) keeps us
+// inside the strict CSP — script-src is locked to 'self'.
+func injectBasePathHint(body []byte, basePath string) []byte {
+	snippet := []byte(`<meta name="zn-base-path" content="` + htmlAttrEscape(basePath) + `">`)
+	if idx := indexOfFold(body, []byte("</head>")); idx >= 0 {
+		out := make([]byte, 0, len(body)+len(snippet))
+		out = append(out, body[:idx]...)
+		out = append(out, snippet...)
+		out = append(out, body[idx:]...)
+		return out
+	}
+	return append(snippet, body...)
+}
+
+// htmlAttrEscape escapes the characters that would let a base-path
+// value break out of a double-quoted HTML attribute.
+func htmlAttrEscape(value string) string {
+	replacer := strings.NewReplacer(
+		"&", "&amp;",
+		"\"", "&quot;",
+		"<", "&lt;",
+		">", "&gt;",
+	)
+	return replacer.Replace(value)
+}
+
+func indexOfFold(haystack, needle []byte) int {
+	n := len(needle)
+	if n == 0 || n > len(haystack) {
+		return -1
+	}
+	for i := 0; i+n <= len(haystack); i++ {
+		match := true
+		for j := 0; j < n; j++ {
+			a := haystack[i+j]
+			b := needle[j]
+			if a >= 'A' && a <= 'Z' {
+				a += 'a' - 'A'
+			}
+			if b >= 'A' && b <= 'Z' {
+				b += 'a' - 'A'
+			}
+			if a != b {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
 }
 
 func copyReadSeeker(w http.ResponseWriter, f fs.File) (int64, error) {

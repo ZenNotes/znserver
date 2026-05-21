@@ -30,6 +30,7 @@ type Config struct {
 	BrowseRoots         []string `json:"-"`
 	AllowedOrigins      []string `json:"-"`
 	Bind                string   `json:"bind"`
+	BasePath            string   `json:"basePath"`
 	AuthToken           string   `json:"authToken"`
 	AuthTokenSource     string   `json:"-"`
 	AllowUnscopedBrowse bool     `json:"-"`
@@ -72,6 +73,9 @@ func Load() Config {
 			if stored.Bind != "" {
 				cfg.Bind = stored.Bind
 			}
+			if stored.BasePath != "" {
+				cfg.BasePath = stored.BasePath
+			}
 			if stored.AuthToken != "" {
 				cfg.AuthToken = stored.AuthToken
 				cfg.AuthTokenSource = AuthTokenSourceConfig
@@ -89,6 +93,10 @@ func Load() Config {
 	if v := os.Getenv("ZENNOTES_BIND"); v != "" {
 		cfg.Bind = v
 	}
+	if v := os.Getenv("ZENNOTES_BASE_PATH"); v != "" {
+		cfg.BasePath = v
+	}
+	cfg.BasePath = NormalizeBasePath(cfg.BasePath)
 	if v := os.Getenv("ZENNOTES_AUTH_TOKEN"); v != "" {
 		cfg.AuthToken = v
 		cfg.AuthTokenSource = AuthTokenSourceEnv
@@ -150,6 +158,29 @@ func LegacyVaultConfigPath(vaultRoot string) string {
 func LegacyVaultConfigExists(vaultRoot string) bool {
 	_, err := os.Stat(LegacyVaultConfigPath(vaultRoot))
 	return err == nil
+}
+
+// NormalizeBasePath coerces a raw base-path string into the form the
+// server uses everywhere: empty (meaning "serve at root") or a path that
+// starts with `/` and has no trailing slash, e.g. "/zennotes". Multiple
+// adjacent slashes are collapsed.
+func NormalizeBasePath(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "/" {
+		return ""
+	}
+	if !strings.HasPrefix(trimmed, "/") {
+		trimmed = "/" + trimmed
+	}
+	// Collapse repeated slashes ("/foo//bar" → "/foo/bar").
+	for strings.Contains(trimmed, "//") {
+		trimmed = strings.ReplaceAll(trimmed, "//", "/")
+	}
+	trimmed = strings.TrimRight(trimmed, "/")
+	if trimmed == "" {
+		return ""
+	}
+	return trimmed
 }
 
 func parseListEnv(name string) []string {

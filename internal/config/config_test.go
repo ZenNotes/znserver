@@ -79,6 +79,40 @@ func TestParseCIDRListEnv(t *testing.T) {
 	}
 }
 
+func TestNormalizeBasePath(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{"", ""},
+		{"   ", ""},
+		{"/", ""},
+		{"//", ""},
+		{"zennotes", "/zennotes"},
+		{"/zennotes", "/zennotes"},
+		{"/zennotes/", "/zennotes"},
+		{"/zennotes//", "/zennotes"},
+		{"/foo/bar", "/foo/bar"},
+		{"/foo//bar/", "/foo/bar"},
+		{" /apps/notes ", "/apps/notes"},
+	}
+	for _, c := range cases {
+		if got := NormalizeBasePath(c.raw); got != c.want {
+			t.Errorf("NormalizeBasePath(%q) = %q, want %q", c.raw, got, c.want)
+		}
+	}
+}
+
+func TestLoadBasePathFromEnv(t *testing.T) {
+	t.Setenv("ZENNOTES_AUTH_TOKEN", "")
+	t.Setenv("ZENNOTES_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+	t.Setenv("ZENNOTES_BASE_PATH", "/zennotes/")
+	cfg := Load()
+	if cfg.BasePath != "/zennotes" {
+		t.Fatalf("BasePath = %q, want /zennotes (trailing slash trimmed)", cfg.BasePath)
+	}
+}
+
 func TestParseFileModeEnv(t *testing.T) {
 	cases := []struct {
 		raw  string
