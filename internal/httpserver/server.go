@@ -950,7 +950,16 @@ func (s *Server) watchWS(w http.ResponseWriter, r *http.Request) {
 // --- Static / PWA fallback ---
 
 func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
-	urlPath := strings.TrimPrefix(r.URL.Path, "/")
+	// chi's Mount routes by a stripped path but leaves r.URL.Path intact,
+	// so under a base-path deploy this still carries the prefix (e.g.
+	// "/zennotes/assets/app.css"). Trim it before resolving against the
+	// embedded bundle, otherwise every asset misses and falls back to
+	// index.html with a text/html MIME type (issue #58).
+	urlPath := r.URL.Path
+	if basePath := s.currentConfig().BasePath; basePath != "" {
+		urlPath = strings.TrimPrefix(urlPath, basePath)
+	}
+	urlPath = strings.TrimPrefix(urlPath, "/")
 	if urlPath == "" {
 		urlPath = "index.html"
 	}

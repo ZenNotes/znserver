@@ -2,9 +2,11 @@ package httpserver
 
 import (
 	"bytes"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -28,7 +30,8 @@ func newBasePathServer(t *testing.T, basePath string) *httptest.Server {
 		"index.html": &fstest.MapFile{
 			Data: []byte("<!doctype html><html><head><title>ZenNotes</title></head><body></body></html>"),
 		},
-		"manifest.webmanifest": &fstest.MapFile{Data: []byte("{}")},
+		"manifest.webmanifest":  &fstest.MapFile{Data: []byte("{}")},
+		"assets/index-test.css": &fstest.MapFile{Data: []byte("body{color:red}")},
 	}
 	srv := httptest.NewServer(New(v, nil, fs.FS(static), cfg).Router())
 	t.Cleanup(srv.Close)
@@ -53,6 +56,46 @@ func TestBasePathHealthz(t *testing.T) {
 	defer off.Body.Close()
 	if off.StatusCode == http.StatusOK {
 		t.Fatalf("requests outside the base path should not match: got 200")
+	}
+}
+
+func TestBasePathServesStaticAssets(t *testing.T) {
+	srv := newBasePathServer(t, "/zennotes")
+
+	// A hashed CSS asset under the base path must serve the real file
+	// with a CSS content type. If the prefix isn't stripped before the
+	// embedded-FS lookup, serveStatic falls back to index.html and the
+	// browser refuses it for a bad MIME type (issue #58).
+	resp, err := http.Get(srv.URL + "/zennotes/assets/index-test.css")
+	if err != nil {
+		t.Fatalf("get css under base: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/css") {
+		t.Fatalf("expected text/css content type, got %q", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "body{color:red}" {
+		t.Fatalf("expected css body, got %q", string(body))
+	}
+}
+
+func TestBasePathServesManifest(t *testing.T) {
+	srv := newBasePathServer(t, "/zennotes")
+	resp, err := http.Get(srv.URL + "/zennotes/manifest.webmanifest")
+	if err != nil {
+		t.Fatalf("get manifest under base: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "{}" {
+		t.Fatalf("expected manifest body {}, got %q", string(body))
 	}
 }
 
