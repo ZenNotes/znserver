@@ -34,6 +34,10 @@ func main() {
 		MaxAssetBytes: cfg.MaxAssetBytes,
 	})
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			logVaultPermissionHelp(cfg.VaultPath, err)
+			os.Exit(1)
+		}
 		log.Fatalf("vault init: %v", err)
 	}
 
@@ -80,6 +84,18 @@ func main() {
 	shutdownCtx, stopShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stopShutdown()
 	_ = httpSrv.Shutdown(shutdownCtx)
+}
+
+// logVaultPermissionHelp turns the cryptic "mkdir … permission denied" into
+// actionable guidance: the container runs as a non-root UID, so a bind-mounted
+// host vault has to be writable by that UID (#227).
+func logVaultPermissionHelp(vaultPath string, err error) {
+	log.Printf("vault init: %v", err)
+	log.Printf("→ ZenNotes runs as UID %d:%d and cannot write to the vault directory %q.", os.Getuid(), os.Getgid(), vaultPath)
+	log.Printf("→ The mounted host directory must be writable by that UID. Either:")
+	log.Printf("→   • run the container as a user that owns it:  docker run --user \"$(id -u):$(id -g)\" …")
+	log.Printf("→   • or make the host directory owned by / writable for UID %d (e.g. chown).", os.Getuid())
+	log.Printf("→ See https://github.com/ZenNotes/zennotes/blob/main/docs/how-to/self-host-with-docker.md#permissions")
 }
 
 func logStartupBanner(cfg config.Config) {
