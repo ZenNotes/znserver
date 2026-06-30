@@ -10,7 +10,7 @@ import (
 // desktop build byte-for-byte for the common cases.
 
 var (
-	fencedBlockRe = regexp.MustCompile("(?m)(^|\n)```[^\n]*\n[\\s\\S]*?\n```[ \t]*(?:\n|$)")
+	fenceLineRe   = regexp.MustCompile("^[ \t]*(`{3,}|~{3,})(.*)$")
 	inlineCodeRe  = regexp.MustCompile("`[^`\n]*`")
 	tagRe         = regexp.MustCompile(`(?:^|\s)#(\p{L}[\p{L}\d_/-]*)`)
 	wikilinkRe    = regexp.MustCompile(`(!?)\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]`)
@@ -33,11 +33,46 @@ var attachmentExts = map[string]bool{
 	".m4v": true, ".mov": true, ".mp4": true, ".ogv": true, ".webm": true,
 }
 
+// stripCodeContent blanks fenced and inline code so the tag/link/excerpt
+// scanners never read code as content. Fence detection is line-based and
+// indentation-tolerant: a fence nested under a list item is still a code block,
+// so its contents (e.g. a C "#include" line) must not be scanned. A
+// column-0-anchored regex missed indented fences and leaked them as tags (#293).
+// Mirrors stripCodeContent in apps/desktop/src/main/vault.ts and
+// packages/app-core/src/lib/tags.ts — keep the three in sync.
 func stripCodeContent(body string) string {
-	if !strings.Contains(body, "`") {
+	if !strings.Contains(body, "`") && !strings.Contains(body, "~") {
 		return body
 	}
-	out := fencedBlockRe.ReplaceAllString(body, "$1 ")
+	lines := strings.Split(body, "\n")
+	inFence := false
+	var fenceChar byte
+	fenceLen := 0
+	for i, line := range lines {
+		if m := fenceLineRe.FindStringSubmatch(line); m != nil {
+			marker := m[1]
+			char := marker[0]
+			rest := m[2]
+			if !inFence {
+				// A backtick fence's info string may not contain a backtick (CommonMark).
+				if char == '~' || !strings.Contains(rest, "`") {
+					inFence = true
+					fenceChar = char
+					fenceLen = len(marker)
+					lines[i] = " "
+					continue
+				}
+			} else if char == fenceChar && len(marker) >= fenceLen && strings.TrimSpace(rest) == "" {
+				inFence = false
+				lines[i] = " "
+				continue
+			}
+		}
+		if inFence {
+			lines[i] = " "
+		}
+	}
+	out := strings.Join(lines, "\n")
 	out = inlineCodeRe.ReplaceAllString(out, " ")
 	return out
 }
