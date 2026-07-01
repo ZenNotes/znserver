@@ -58,6 +58,17 @@ func TestExtractorsStillIgnoreCodeAfterFastPathGuards(t *testing.T) {
 	}
 }
 
+// #293: a fenced code block nested under a list item (indented) is still code —
+// its `#include` line must not be indexed as a tag.
+func TestExtractTagsIgnoresIndentedFence(t *testing.T) {
+	body := "- bullet\n\n  ```c\n  #include <stdio.h>\n  ```\n\n#kept"
+
+	tags := ExtractTags(body)
+	if len(tags) != 1 || tags[0] != "kept" {
+		t.Fatalf("ExtractTags() = %#v, want [kept]", tags)
+	}
+}
+
 // #205: tags in non-Latin scripts (Cyrillic, CJK, …) must be recognized.
 func TestExtractTagsUnicode(t *testing.T) {
 	body := "Заметки: #тест #ошибка/баг и 笔记 #标签 plus #ascii-1 done"
