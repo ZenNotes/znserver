@@ -170,3 +170,23 @@ func TestParseFileModeEnv(t *testing.T) {
 		}
 	}
 }
+
+// #sessions: ZENNOTES_PERSIST_SESSIONS is opt-in (off by default), and the
+// sessions file sits next to the host config.
+func TestPersistSessionsFlagAndPath(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "server.json")
+	t.Setenv("ZENNOTES_AUTH_TOKEN", "x")
+	t.Setenv("ZENNOTES_CONFIG_PATH", cfgPath)
+
+	t.Setenv("ZENNOTES_PERSIST_SESSIONS", "")
+	if Load().PersistSessions {
+		t.Fatal("PersistSessions should default off")
+	}
+	t.Setenv("ZENNOTES_PERSIST_SESSIONS", "1")
+	if !Load().PersistSessions {
+		t.Fatal("ZENNOTES_PERSIST_SESSIONS=1 should enable it")
+	}
+	if got, want := SessionsPath(), filepath.Join(filepath.Dir(cfgPath), "sessions.json"); got != want {
+		t.Fatalf("SessionsPath = %q, want %q", got, want)
+	}
+}

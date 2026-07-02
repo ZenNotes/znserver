@@ -46,7 +46,10 @@ type Config struct {
 	MaxAssetBytes  int64       `json:"-"`
 	MaxNoteBytes   int64       `json:"-"`
 	BehindTLS      bool        `json:"-"`
-	TrustedProxies []net.IPNet `json:"-"`
+	// PersistSessions saves browser sessions to <data>/sessions.json so they
+	// survive a server restart. Opt-in via ZENNOTES_PERSIST_SESSIONS.
+	PersistSessions bool        `json:"-"`
+	TrustedProxies  []net.IPNet `json:"-"`
 	VaultFileMode  fs.FileMode `json:"-"`
 	VaultDirMode   fs.FileMode `json:"-"`
 }
@@ -59,6 +62,12 @@ func configFilePath() string {
 		return filepath.Join(home, ".zennotes", "server.json")
 	}
 	return ".zennotes-server.json"
+}
+
+// SessionsPath is where opt-in persisted browser sessions live — next to the
+// host config file (e.g. /data/sessions.json alongside /data/server.json).
+func SessionsPath() string {
+	return filepath.Join(filepath.Dir(configFilePath()), "sessions.json")
 }
 
 func Load() Config {
@@ -124,6 +133,7 @@ func Load() Config {
 	cfg.DevMode = envEnabled("ZENNOTES_DEV")
 	cfg.DisableWatcher = envEnabled("ZENNOTES_DISABLE_WATCHER")
 	cfg.BehindTLS = envEnabled("ZENNOTES_BEHIND_TLS")
+	cfg.PersistSessions = envEnabled("ZENNOTES_PERSIST_SESSIONS")
 	cfg.TrustedProxies = parseCIDRListEnv("ZENNOTES_TRUSTED_PROXIES")
 	if v := parseInt64Env("ZENNOTES_MAX_ASSET_BYTES"); v > 0 {
 		cfg.MaxAssetBytes = v

@@ -4,11 +4,13 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +26,9 @@ const (
 type sessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]time.Time
+	// path, when non-empty, persists sessions to disk so browser logins survive a
+	// server restart (opt-in via ZENNOTES_PERSIST_SESSIONS).
+	path string
 }
 
 type attemptLimiter struct {
@@ -42,8 +47,49 @@ func (e httpStatusError) Error() string {
 	return e.msg
 }
 
-func newSessionStore() *sessionStore {
-	return &sessionStore{sessions: make(map[string]time.Time)}
+func newSessionStore(path string) *sessionStore {
+	s := &sessionStore{sessions: make(map[string]time.Time), path: path}
+	s.load()
+	return s
+}
+
+// load restores persisted sessions, dropping any already expired. Best-effort:
+// a missing/unreadable/corrupt file just starts with no sessions.
+func (s *sessionStore) load() {
+	if s.path == "" {
+		return
+	}
+	raw, err := os.ReadFile(s.path)
+	if err != nil {
+		return // no file yet (first run) or unreadable — start clean
+	}
+	var stored map[string]time.Time
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		log.Printf("sessions: ignoring unreadable %q: %v", s.path, err)
+		return
+	}
+	now := time.Now()
+	for token, expiresAt := range stored {
+		if now.Before(expiresAt) {
+			s.sessions[token] = expiresAt
+		}
+	}
+}
+
+// persistLocked writes the current sessions to disk (mode 0600). The caller must
+// hold s.mu. Best-effort: a write failure only means sessions won't survive the
+// next restart, so it is logged but not fatal.
+func (s *sessionStore) persistLocked() {
+	if s.path == "" {
+		return
+	}
+	data, err := json.Marshal(s.sessions)
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(s.path, data, 0o600); err != nil {
+		log.Printf("sessions: could not persist to %q: %v", s.path, err)
+	}
 }
 
 func (s *sessionStore) create() (string, time.Time, error) {
@@ -55,6 +101,7 @@ func (s *sessionStore) create() (string, time.Time, error) {
 	expiresAt := time.Now().Add(sessionTTL)
 	s.mu.Lock()
 	s.sessions[token] = expiresAt
+	s.persistLocked()
 	s.mu.Unlock()
 	return token, expiresAt, nil
 }
@@ -81,12 +128,14 @@ func (s *sessionStore) delete(token string) {
 	}
 	s.mu.Lock()
 	delete(s.sessions, token)
+	s.persistLocked()
 	s.mu.Unlock()
 }
 
 func (s *sessionStore) deleteAll() {
 	s.mu.Lock()
 	s.sessions = make(map[string]time.Time)
+	s.persistLocked()
 	s.mu.Unlock()
 }
 

@@ -47,12 +47,18 @@ type Server struct {
 }
 
 func New(v *vault.Vault, w *watcher.Watcher, static fs.FS, cfg config.Config) *Server {
+	// Opt-in: persist browser sessions next to the host config so they survive a
+	// restart. Off by default — an empty path keeps the store purely in-memory.
+	sessionsPath := ""
+	if cfg.PersistSessions {
+		sessionsPath = config.SessionsPath()
+	}
 	return &Server{
 		Vault:           v,
 		Watcher:         w,
 		Static:          static,
 		Config:          cfg,
-		sessions:        newSessionStore(),
+		sessions:        newSessionStore(sessionsPath),
 		loginLimiter:    newAttemptLimiter(10*time.Minute, 10),
 		wsRejectLimiter: newAttemptLimiter(1*time.Minute, 20),
 	}
