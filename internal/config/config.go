@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"io/fs"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -105,11 +106,17 @@ func Load() Config {
 		cfg.AuthToken = v
 		cfg.AuthTokenSource = AuthTokenSourceEnv
 	} else if path := os.Getenv("ZENNOTES_AUTH_TOKEN_FILE"); path != "" {
-		if raw, err := os.ReadFile(path); err == nil {
-			cfg.AuthToken = strings.TrimSpace(string(raw))
-			if cfg.AuthToken != "" {
-				cfg.AuthTokenSource = AuthTokenSourceFile
-			}
+		// The token comes from a file (the Docker/Kubernetes "*_FILE" secrets
+		// convention). A set-but-unreadable or empty file is a misconfiguration
+		// the user meant to work — surface it clearly instead of silently
+		// falling through to the generic "missing ZENNOTES_AUTH_TOKEN" error.
+		if raw, err := os.ReadFile(path); err != nil {
+			log.Printf("config: ZENNOTES_AUTH_TOKEN_FILE is set to %q but it could not be read: %v", path, err)
+		} else if token := strings.TrimSpace(string(raw)); token == "" {
+			log.Printf("config: ZENNOTES_AUTH_TOKEN_FILE %q is empty — no auth token loaded", path)
+		} else {
+			cfg.AuthToken = token
+			cfg.AuthTokenSource = AuthTokenSourceFile
 		}
 	}
 	cfg.AllowUnscopedBrowse = envEnabled("ZENNOTES_ALLOW_UNSCOPED_BROWSE")
