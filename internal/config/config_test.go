@@ -44,6 +44,42 @@ func TestEnvAuthTokenWinsOverFile(t *testing.T) {
 	}
 }
 
+// #304: a ZENNOTES_AUTH_TOKEN_FILE pointing at a missing/unreadable path must
+// not set a token (and must not panic); the read error is logged so the failure
+// is visible rather than surfacing as a misleading "missing token" error.
+func TestAuthTokenFileMissingIsIgnoredNotFatal(t *testing.T) {
+	t.Setenv("ZENNOTES_AUTH_TOKEN", "")
+	t.Setenv("ZENNOTES_AUTH_TOKEN_FILE", filepath.Join(t.TempDir(), "does-not-exist"))
+	t.Setenv("ZENNOTES_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+
+	cfg := Load()
+	if cfg.AuthToken != "" {
+		t.Fatalf("AuthToken = %q, want empty for an unreadable file", cfg.AuthToken)
+	}
+	if cfg.AuthTokenSource != AuthTokenSourceNone {
+		t.Fatalf("AuthTokenSource = %q, want %q", cfg.AuthTokenSource, AuthTokenSourceNone)
+	}
+}
+
+// An empty (or whitespace-only) token file loads no token rather than an empty one.
+func TestAuthTokenFileEmptyLoadsNoToken(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("   \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZENNOTES_AUTH_TOKEN", "")
+	t.Setenv("ZENNOTES_AUTH_TOKEN_FILE", tokenFile)
+	t.Setenv("ZENNOTES_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
+
+	cfg := Load()
+	if cfg.AuthToken != "" {
+		t.Fatalf("AuthToken = %q, want empty for a whitespace-only file", cfg.AuthToken)
+	}
+	if cfg.AuthTokenSource != AuthTokenSourceNone {
+		t.Fatalf("AuthTokenSource = %q, want %q", cfg.AuthTokenSource, AuthTokenSourceNone)
+	}
+}
+
 func TestLoadDefaultLimitsAndModes(t *testing.T) {
 	t.Setenv("ZENNOTES_AUTH_TOKEN", "")
 	t.Setenv("ZENNOTES_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.json"))
@@ -132,5 +168,25 @@ func TestParseFileModeEnv(t *testing.T) {
 		if ok != c.ok || got != c.want {
 			t.Errorf("parseFileModeEnv(%q) = (%v, %v), want (%v, %v)", c.raw, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+// #sessions: ZENNOTES_PERSIST_SESSIONS is opt-in (off by default), and the
+// sessions file sits next to the host config.
+func TestPersistSessionsFlagAndPath(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "server.json")
+	t.Setenv("ZENNOTES_AUTH_TOKEN", "x")
+	t.Setenv("ZENNOTES_CONFIG_PATH", cfgPath)
+
+	t.Setenv("ZENNOTES_PERSIST_SESSIONS", "")
+	if Load().PersistSessions {
+		t.Fatal("PersistSessions should default off")
+	}
+	t.Setenv("ZENNOTES_PERSIST_SESSIONS", "1")
+	if !Load().PersistSessions {
+		t.Fatal("ZENNOTES_PERSIST_SESSIONS=1 should enable it")
+	}
+	if got, want := SessionsPath(), filepath.Join(filepath.Dir(cfgPath), "sessions.json"); got != want {
+		t.Fatalf("SessionsPath = %q, want %q", got, want)
 	}
 }

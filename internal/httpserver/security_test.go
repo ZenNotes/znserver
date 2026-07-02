@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZenNotes/zennotes/apps/server/internal/config"
 	"github.com/ZenNotes/zennotes/apps/server/internal/vault"
@@ -514,5 +515,48 @@ func TestCORSRejectionLoggedOncePerOrigin(t *testing.T) {
 	}
 	if other != 1 {
 		t.Errorf("expected exactly one log for other.example.com, got %d:\n%s", other, out)
+	}
+}
+
+func TestSessionStorePersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+
+	// A store with a path survives a "restart" (a fresh store on the same file).
+	first := newSessionStore(path)
+	token, _, err := first.create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newSessionStore(path).isValid(token) {
+		t.Fatal("session should survive a restart when persistence is on")
+	}
+
+	// Logout removes it from disk too.
+	newSessionStore(path).delete(token)
+	if newSessionStore(path).isValid(token) {
+		t.Fatal("deleted session should not come back after a restart")
+	}
+}
+
+func TestSessionStoreNoPersistenceByDefault(t *testing.T) {
+	// An empty path keeps the store in-memory; nothing survives a "restart".
+	first := newSessionStore("")
+	token, _, err := first.create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newSessionStore("").isValid(token) {
+		t.Fatal("without a path, sessions must not persist")
+	}
+}
+
+func TestSessionStoreDropsExpiredOnLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	data, _ := json.Marshal(map[string]time.Time{"stale": time.Now().Add(-time.Hour)})
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if newSessionStore(path).isValid("stale") {
+		t.Fatal("an expired persisted session should be dropped on load")
 	}
 }

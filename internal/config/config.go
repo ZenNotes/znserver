@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"io/fs"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -45,7 +46,10 @@ type Config struct {
 	MaxAssetBytes  int64       `json:"-"`
 	MaxNoteBytes   int64       `json:"-"`
 	BehindTLS      bool        `json:"-"`
-	TrustedProxies []net.IPNet `json:"-"`
+	// PersistSessions saves browser sessions to <data>/sessions.json so they
+	// survive a server restart. Opt-in via ZENNOTES_PERSIST_SESSIONS.
+	PersistSessions bool        `json:"-"`
+	TrustedProxies  []net.IPNet `json:"-"`
 	VaultFileMode  fs.FileMode `json:"-"`
 	VaultDirMode   fs.FileMode `json:"-"`
 }
@@ -58,6 +62,12 @@ func configFilePath() string {
 		return filepath.Join(home, ".zennotes", "server.json")
 	}
 	return ".zennotes-server.json"
+}
+
+// SessionsPath is where opt-in persisted browser sessions live — next to the
+// host config file (e.g. /data/sessions.json alongside /data/server.json).
+func SessionsPath() string {
+	return filepath.Join(filepath.Dir(configFilePath()), "sessions.json")
 }
 
 func Load() Config {
@@ -105,11 +115,17 @@ func Load() Config {
 		cfg.AuthToken = v
 		cfg.AuthTokenSource = AuthTokenSourceEnv
 	} else if path := os.Getenv("ZENNOTES_AUTH_TOKEN_FILE"); path != "" {
-		if raw, err := os.ReadFile(path); err == nil {
-			cfg.AuthToken = strings.TrimSpace(string(raw))
-			if cfg.AuthToken != "" {
-				cfg.AuthTokenSource = AuthTokenSourceFile
-			}
+		// The token comes from a file (the Docker/Kubernetes "*_FILE" secrets
+		// convention). A set-but-unreadable or empty file is a misconfiguration
+		// the user meant to work — surface it clearly instead of silently
+		// falling through to the generic "missing ZENNOTES_AUTH_TOKEN" error.
+		if raw, err := os.ReadFile(path); err != nil {
+			log.Printf("config: ZENNOTES_AUTH_TOKEN_FILE is set to %q but it could not be read: %v", path, err)
+		} else if token := strings.TrimSpace(string(raw)); token == "" {
+			log.Printf("config: ZENNOTES_AUTH_TOKEN_FILE %q is empty — no auth token loaded", path)
+		} else {
+			cfg.AuthToken = token
+			cfg.AuthTokenSource = AuthTokenSourceFile
 		}
 	}
 	cfg.AllowUnscopedBrowse = envEnabled("ZENNOTES_ALLOW_UNSCOPED_BROWSE")
@@ -117,6 +133,7 @@ func Load() Config {
 	cfg.DevMode = envEnabled("ZENNOTES_DEV")
 	cfg.DisableWatcher = envEnabled("ZENNOTES_DISABLE_WATCHER")
 	cfg.BehindTLS = envEnabled("ZENNOTES_BEHIND_TLS")
+	cfg.PersistSessions = envEnabled("ZENNOTES_PERSIST_SESSIONS")
 	cfg.TrustedProxies = parseCIDRListEnv("ZENNOTES_TRUSTED_PROXIES")
 	if v := parseInt64Env("ZENNOTES_MAX_ASSET_BYTES"); v > 0 {
 		cfg.MaxAssetBytes = v
