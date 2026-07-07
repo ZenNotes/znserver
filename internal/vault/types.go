@@ -20,14 +20,17 @@ const (
 	FolderArchive NoteFolder = "archive"
 	FolderTrash   NoteFolder = "trash"
 
-	PrimaryNotesInbox             PrimaryNotesLocation = "inbox"
-	PrimaryNotesRoot              PrimaryNotesLocation = "root"
-	DefaultDailyNotesDirectory                         = "Daily Notes"
-	DefaultDailyNoteTitlePattern                       = "yyyy-MM-dd"
-	DefaultDailyNoteLocale                             = "system"
-	DefaultWeeklyNotesDirectory                        = "Weekly Notes"
-	DefaultWeeklyNoteTitlePattern                      = "yyyy-'W'ww"
-	DefaultWeeklyNoteLocale                            = "system"
+	PrimaryNotesInbox              PrimaryNotesLocation = "inbox"
+	PrimaryNotesRoot               PrimaryNotesLocation = "root"
+	DefaultDailyNotesDirectory                          = "Daily Notes"
+	DefaultDailyNoteTitlePattern                        = "yyyy-MM-dd"
+	DefaultDailyNoteLocale                              = "system"
+	DefaultWeeklyNotesDirectory                         = "Weekly Notes"
+	DefaultWeeklyNoteTitlePattern                       = "yyyy-'W'ww"
+	DefaultWeeklyNoteLocale                             = "system"
+	DefaultMonthlyNotesDirectory                        = "Monthly Notes"
+	DefaultMonthlyNoteTitlePattern                      = "yyyy-MM"
+	DefaultMonthlyNoteLocale                            = "system"
 )
 
 func IsValidFolder(f NoteFolder) bool {
@@ -84,10 +87,20 @@ type WeeklyNotesSettings struct {
 	TemplateID     string                    `json:"templateId,omitempty"`
 }
 
+type MonthlyNotesSettings struct {
+	Enabled        bool                      `json:"enabled"`
+	Directory      string                    `json:"directory"`
+	TitlePattern   string                    `json:"titlePattern,omitempty"`
+	Locale         string                    `json:"locale,omitempty"`
+	LegacyPatterns []DateNotePatternSettings `json:"legacyPatterns,omitempty"`
+	TemplateID     string                    `json:"templateId,omitempty"`
+}
+
 type VaultSettings struct {
 	PrimaryNotesLocation PrimaryNotesLocation    `json:"primaryNotesLocation"`
 	DailyNotes           DailyNotesSettings      `json:"dailyNotes"`
 	WeeklyNotes          WeeklyNotesSettings     `json:"weeklyNotes"`
+	MonthlyNotes         MonthlyNotesSettings    `json:"monthlyNotes"`
 	FolderIcons          map[string]FolderIconID `json:"folderIcons"`
 	// Favorites are note paths or `folder:subpath` keys pinned to the top of
 	// the sidebar. Persisted so the web client's favorites survive a round-trip.
