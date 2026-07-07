@@ -563,6 +563,13 @@ func TestVaultSettingsWeeklyNotesRoundTrip(t *testing.T) {
 			Locale:       "en-US",
 			TemplateID:   "weekly-tmpl",
 		},
+		MonthlyNotes: MonthlyNotesSettings{
+			Enabled:      true,
+			Directory:    "My Months",
+			TitlePattern: "yyyy-MM",
+			Locale:       "en-GB",
+			TemplateID:   "monthly-tmpl",
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -594,6 +601,21 @@ func TestVaultSettingsWeeklyNotesRoundTrip(t *testing.T) {
 	}
 	if got.DailyNotes.Locale != "pt-BR" {
 		t.Errorf("daily locale = %q, want %q", got.DailyNotes.Locale, "pt-BR")
+	}
+	if !got.MonthlyNotes.Enabled {
+		t.Error("monthly notes enabled did not persist")
+	}
+	if got.MonthlyNotes.Directory != "My Months" {
+		t.Errorf("monthly directory = %q, want %q", got.MonthlyNotes.Directory, "My Months")
+	}
+	if got.MonthlyNotes.TemplateID != "monthly-tmpl" {
+		t.Errorf("monthly templateId = %q, want %q", got.MonthlyNotes.TemplateID, "monthly-tmpl")
+	}
+	if got.MonthlyNotes.TitlePattern != "yyyy-MM" {
+		t.Errorf("monthly titlePattern = %q, want %q", got.MonthlyNotes.TitlePattern, "yyyy-MM")
+	}
+	if got.MonthlyNotes.Locale != "en-GB" {
+		t.Errorf("monthly locale = %q, want %q", got.MonthlyNotes.Locale, "en-GB")
 	}
 
 	// The key must actually reach vault.json — the original bug was that it

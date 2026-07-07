@@ -276,6 +276,8 @@ func cloneSettings(settings VaultSettings) VaultSettings {
 	copy(dailyLegacyPatterns, settings.DailyNotes.LegacyPatterns)
 	weeklyLegacyPatterns := make([]DateNotePatternSettings, len(settings.WeeklyNotes.LegacyPatterns))
 	copy(weeklyLegacyPatterns, settings.WeeklyNotes.LegacyPatterns)
+	monthlyLegacyPatterns := make([]DateNotePatternSettings, len(settings.MonthlyNotes.LegacyPatterns))
+	copy(monthlyLegacyPatterns, settings.MonthlyNotes.LegacyPatterns)
 	return VaultSettings{
 		PrimaryNotesLocation: settings.PrimaryNotesLocation,
 		DailyNotes: DailyNotesSettings{
@@ -295,6 +297,14 @@ func cloneSettings(settings VaultSettings) VaultSettings {
 			Locale:         settings.WeeklyNotes.Locale,
 			LegacyPatterns: weeklyLegacyPatterns,
 			TemplateID:     settings.WeeklyNotes.TemplateID,
+		},
+		MonthlyNotes: MonthlyNotesSettings{
+			Enabled:        settings.MonthlyNotes.Enabled,
+			Directory:      settings.MonthlyNotes.Directory,
+			TitlePattern:   settings.MonthlyNotes.TitlePattern,
+			Locale:         settings.MonthlyNotes.Locale,
+			LegacyPatterns: monthlyLegacyPatterns,
+			TemplateID:     settings.MonthlyNotes.TemplateID,
 		},
 		FolderIcons: folderIcons,
 		Favorites:   favorites,
@@ -349,6 +359,30 @@ func normalizeWeeklyNoteLocale(value string) string {
 	return trimmed
 }
 
+func normalizeMonthlyNotesDirectory(value string) string {
+	trimmed := strings.Trim(value, "/")
+	if trimmed == "" {
+		return DefaultMonthlyNotesDirectory
+	}
+	return trimmed
+}
+
+func normalizeMonthlyNoteTitlePattern(value string) string {
+	trimmed := strings.TrimSpace(strings.NewReplacer("/", "-", "\\", "-").Replace(value))
+	if trimmed == "" {
+		return DefaultMonthlyNoteTitlePattern
+	}
+	return trimmed
+}
+
+func normalizeMonthlyNoteLocale(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return DefaultMonthlyNoteLocale
+	}
+	return trimmed
+}
+
 func normalizeDailyNoteLegacyPatterns(value []DateNotePatternSettings) []DateNotePatternSettings {
 	out := []DateNotePatternSettings{}
 	seen := map[string]bool{}
@@ -376,6 +410,25 @@ func normalizeWeeklyNoteLegacyPatterns(value []DateNotePatternSettings) []DateNo
 			Directory:    normalizeWeeklyNotesDirectory(pattern.Directory),
 			TitlePattern: normalizeWeeklyNoteTitlePattern(pattern.TitlePattern),
 			Locale:       normalizeWeeklyNoteLocale(pattern.Locale),
+		}
+		key := next.Directory + "\x00" + next.TitlePattern + "\x00" + next.Locale
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, next)
+	}
+	return out
+}
+
+func normalizeMonthlyNoteLegacyPatterns(value []DateNotePatternSettings) []DateNotePatternSettings {
+	out := []DateNotePatternSettings{}
+	seen := map[string]bool{}
+	for _, pattern := range value {
+		next := DateNotePatternSettings{
+			Directory:    normalizeMonthlyNotesDirectory(pattern.Directory),
+			TitlePattern: normalizeMonthlyNoteTitlePattern(pattern.TitlePattern),
+			Locale:       normalizeMonthlyNoteLocale(pattern.Locale),
 		}
 		key := next.Directory + "\x00" + next.TitlePattern + "\x00" + next.Locale
 		if seen[key] {
@@ -429,6 +482,14 @@ func normalizeVaultSettings(value VaultSettings, fallbackPrimary PrimaryNotesLoc
 			Locale:         normalizeWeeklyNoteLocale(value.WeeklyNotes.Locale),
 			LegacyPatterns: normalizeWeeklyNoteLegacyPatterns(value.WeeklyNotes.LegacyPatterns),
 			TemplateID:     value.WeeklyNotes.TemplateID,
+		},
+		MonthlyNotes: MonthlyNotesSettings{
+			Enabled:        value.MonthlyNotes.Enabled,
+			Directory:      normalizeMonthlyNotesDirectory(value.MonthlyNotes.Directory),
+			TitlePattern:   normalizeMonthlyNoteTitlePattern(value.MonthlyNotes.TitlePattern),
+			Locale:         normalizeMonthlyNoteLocale(value.MonthlyNotes.Locale),
+			LegacyPatterns: normalizeMonthlyNoteLegacyPatterns(value.MonthlyNotes.LegacyPatterns),
+			TemplateID:     value.MonthlyNotes.TemplateID,
 		},
 		FolderIcons: folderIcons,
 		Favorites:   normalizeFavorites(value.Favorites),
@@ -1754,6 +1815,7 @@ func (v *Vault) RenameFolder(folder NoteFolder, oldSub, newSub string) (string, 
 		PrimaryNotesLocation: settings.PrimaryNotesLocation,
 		DailyNotes:           settings.DailyNotes,
 		WeeklyNotes:          settings.WeeklyNotes,
+		MonthlyNotes:         settings.MonthlyNotes,
 		FolderIcons:          rewriteFolderIconsForRename(settings.FolderIcons, folder, oldSub, newSub),
 		// Favorites are carried through verbatim; the client rewrites stale
 		// favorite keys after the rename and re-persists them.
@@ -1792,6 +1854,7 @@ func (v *Vault) DeleteFolder(folder NoteFolder, subpath string) error {
 		PrimaryNotesLocation: settings.PrimaryNotesLocation,
 		DailyNotes:           settings.DailyNotes,
 		WeeklyNotes:          settings.WeeklyNotes,
+		MonthlyNotes:         settings.MonthlyNotes,
 		FolderIcons:          removeFolderIcons(settings.FolderIcons, folder, subpath),
 		// Favorites are carried through verbatim; the client prunes the deleted
 		// folder's favorites and re-persists them.
@@ -1828,6 +1891,7 @@ func (v *Vault) DuplicateFolder(folder NoteFolder, subpath string) (string, erro
 		PrimaryNotesLocation: settings.PrimaryNotesLocation,
 		DailyNotes:           settings.DailyNotes,
 		WeeklyNotes:          settings.WeeklyNotes,
+		MonthlyNotes:         settings.MonthlyNotes,
 		FolderIcons:          duplicateFolderIcons(settings.FolderIcons, folder, subpath, relPath),
 		// A duplicated folder isn't auto-favorited; carry existing favorites through.
 		Favorites: settings.Favorites,
