@@ -46,6 +46,16 @@ type Server struct {
 	loggedOrigins   sync.Map // origin -> struct{}; dedupes CORS-rejection logs
 }
 
+func init() {
+	// Go's builtin MIME table lacks web-font types, and static assets are served
+	// with X-Content-Type-Options: nosniff, so register them explicitly. The web
+	// bundle self-hosts Excalidraw's woff2 fonts under /excalidraw-assets/.
+	_ = mime.AddExtensionType(".woff2", "font/woff2")
+	_ = mime.AddExtensionType(".woff", "font/woff")
+	_ = mime.AddExtensionType(".ttf", "font/ttf")
+	_ = mime.AddExtensionType(".otf", "font/otf")
+}
+
 func New(v *vault.Vault, w *watcher.Watcher, static fs.FS, cfg config.Config) *Server {
 	// Opt-in: persist browser sessions next to the host config so they survive a
 	// restart. Off by default — an empty path keeps the store purely in-memory.
