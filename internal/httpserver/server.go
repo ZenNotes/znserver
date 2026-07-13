@@ -191,6 +191,8 @@ func (s *Server) registerProtectedRoutes(r chi.Router) {
 	r.Get("/assets/exists", s.assetsExists)
 	r.Get("/assets/raw", s.rawAsset)
 	r.Post("/assets/upload", s.uploadAsset)
+	r.Post("/assets/rename", s.renameAsset)
+	r.Post("/assets/move", s.moveAsset)
 
 	r.Get("/notes/read", s.readNote)
 	r.Get("/comments/read", s.readComments)
@@ -930,6 +932,40 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, asset)
+}
+
+func (s *Server) renameAsset(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	meta, err := s.currentVault().RenameAsset(req.Path, req.Name)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *Server) moveAsset(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path      string `json:"path"`
+		TargetDir string `json:"targetDir"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	meta, err := s.currentVault().MoveAsset(req.Path, req.TargetDir)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, meta)
 }
 
 // --- WebSocket watcher ---
