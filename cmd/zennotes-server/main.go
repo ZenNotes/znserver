@@ -50,6 +50,10 @@ func main() {
 	w := watcher.StartOrDisabled(v.Root(), cfg.DisableWatcher)
 	defer w.Close()
 
+	if settings, err := v.GetSettings(); err == nil {
+		w.SetFolderPaths(settings.SystemFolderPaths)
+	}
+
 	dist, err := web.Dist()
 	if err != nil {
 		log.Printf("warning: embedded web bundle not available: %v", err)

@@ -678,7 +678,12 @@ func (v *Vault) folderRoot(folder NoteFolder) (string, error) {
 	if folder == FolderInbox {
 		return v.primaryNotesRoot()
 	}
-	return filepath.Join(v.root, string(folder)), nil
+	settings, err := v.GetSettings()
+	if err != nil {
+		return "", err
+	}
+	p := resolveFolderPath(folder, settings.SystemFolderPaths)
+	return filepath.Join(v.root, p), nil
 }
 
 // EnsureLayout creates the four top-level folders and seeds a welcome
@@ -693,7 +698,8 @@ func (v *Vault) EnsureLayout() error {
 		if f == FolderInbox && settings.PrimaryNotesLocation == PrimaryNotesRoot {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Join(v.root, string(f)), v.dirMode); err != nil {
+		p := resolveFolderPath(f, settings.SystemFolderPaths)
+		if err := os.MkdirAll(filepath.Join(v.root, p), v.dirMode); err != nil {
 			return err
 		}
 	}

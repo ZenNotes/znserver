@@ -43,7 +43,37 @@ func IsValidFolder(f NoteFolder) bool {
 
 var AllFolders = []NoteFolder{FolderInbox, FolderQuick, FolderArchive, FolderTrash}
 
+var defaultFolderPaths = map[NoteFolder]string{
+	FolderInbox:   string(FolderInbox),
+	FolderQuick:   string(FolderQuick),
+	FolderArchive: string(FolderArchive),
+	FolderTrash:   string(FolderTrash),
+}
+
+func resolveFolderPath(folder NoteFolder, paths map[string]string) string {
+	if p, ok := paths[string(folder)]; ok {
+		return p
+	}
+	return defaultFolderPaths[folder]
+}
+
+func buildReverseFolderMap(paths map[string]string) map[string]NoteFolder {
+	m := make(map[string]NoteFolder)
+	for _, folder := range AllFolders {
+		p := resolveFolderPath(folder, paths)
+		top := strings.SplitN(p, "/", 2)[0]
+		if top != string(folder) {
+			m[strings.ToLower(top)] = folder
+		}
+	}
+	return m
+}
+
 func FolderForRelativePath(rel string) (NoteFolder, bool) {
+	return FolderForRelativePathWithSettings(rel, nil)
+}
+
+func FolderForRelativePathWithSettings(rel string, paths map[string]string) (NoteFolder, bool) {
 	normalized := filepath.ToSlash(rel)
 	top := strings.SplitN(normalized, "/", 2)[0]
 	if IsValidFolder(NoteFolder(top)) {
@@ -51,6 +81,13 @@ func FolderForRelativePath(rel string) (NoteFolder, bool) {
 	}
 	if top == "" || strings.HasPrefix(top, ".") {
 		return "", false
+	}
+	if len(paths) > 0 {
+		if reverseMap := buildReverseFolderMap(paths); len(reverseMap) > 0 {
+			if folder, ok := reverseMap[strings.ToLower(top)]; ok {
+				return folder, true
+			}
+		}
 	}
 	if _, reserved := reservedRootNames[top]; reserved {
 		return "", false
@@ -105,6 +142,9 @@ type VaultSettings struct {
 	// Favorites are note paths or `folder:subpath` keys pinned to the top of
 	// the sidebar. Persisted so the web client's favorites survive a round-trip.
 	Favorites []string `json:"favorites"`
+	// Per-system-folder on-disk path overrides (#115). Maps internal folder IDs
+	// to vault-relative directory names. Absent entries fall back to the default.
+	SystemFolderPaths map[string]string `json:"systemFolderPaths,omitempty"`
 }
 
 // NoteMeta — vault-relative note metadata. Mirrors shared/ipc.ts NoteMeta.

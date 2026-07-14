@@ -21,11 +21,12 @@ func newTestWatcher(t *testing.T, root string) *Watcher {
 	}
 	t.Cleanup(func() { _ = fsw.Close() })
 	return &Watcher{
-		root:   root,
-		fs:     fsw,
-		subs:   map[chan vault.ChangeEvent]struct{}{},
-		dirs:   map[string]struct{}{},
-		stopCh: make(chan struct{}),
+		root:        root,
+		fs:          fsw,
+		subs:        map[chan vault.ChangeEvent]struct{}{},
+		dirs:        map[string]struct{}{},
+		stopCh:      make(chan struct{}),
+		folderPaths: nil,
 	}
 }
 
