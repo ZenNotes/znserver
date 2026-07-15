@@ -135,9 +135,27 @@ func init() {
 	}
 }
 
-func shouldHidePrimaryRootName(name string) bool {
-	_, hidden := hiddenPrimaryRootNames[name]
-	return hidden
+func shouldHidePrimaryRootName(name string, extra map[string]struct{}) bool {
+	if _, hidden := hiddenPrimaryRootNames[name]; hidden {
+		return true
+	}
+	if extra != nil {
+		if _, hidden := extra[name]; hidden {
+			return true
+		}
+	}
+	return false
+}
+
+func customHiddenPrimaryRootNames(settings VaultSettings) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, folder := range []NoteFolder{FolderQuick, FolderArchive, FolderTrash} {
+		p := resolveFolderPath(folder, settings.SystemFolderPaths)
+		if p != string(folder) {
+			out[p] = struct{}{}
+		}
+	}
+	return out
 }
 
 // Vault encapsulates all operations against a filesystem vault root.
@@ -491,8 +509,9 @@ func normalizeVaultSettings(value VaultSettings, fallbackPrimary PrimaryNotesLoc
 			LegacyPatterns: normalizeMonthlyNoteLegacyPatterns(value.MonthlyNotes.LegacyPatterns),
 			TemplateID:     value.MonthlyNotes.TemplateID,
 		},
-		FolderIcons: folderIcons,
-		Favorites:   normalizeFavorites(value.Favorites),
+		FolderIcons:       folderIcons,
+		Favorites:         normalizeFavorites(value.Favorites),
+		SystemFolderPaths: normalizeSystemFolderPaths(value.SystemFolderPaths),
 	}
 }
 
@@ -865,6 +884,12 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 	defer v.mu.RUnlock()
 	v.hydratePersistedNoteMetaCache()
 
+	settings, err := v.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	extraHidden := customHiddenPrimaryRootNames(settings)
+
 	type noteFile struct {
 		folder NoteFolder
 		path   string
@@ -889,12 +914,12 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 					return filepath.SkipDir
 				}
 				if isFormDirName(d.Name()) {
-					return filepath.SkipDir // database folder — not loose notes
+					return filepath.SkipDir
 				}
 				if isPrimaryRoot && path != folderRoot {
 					parent := filepath.Dir(path)
 					if filepath.Clean(parent) == filepath.Clean(folderRoot) {
-						if shouldHidePrimaryRootName(d.Name()) {
+						if shouldHidePrimaryRootName(d.Name(), extraHidden) {
 							return filepath.SkipDir
 						}
 					}
@@ -904,7 +929,7 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 			if isPrimaryRoot {
 				parent := filepath.Dir(path)
 				if filepath.Clean(parent) == filepath.Clean(folderRoot) {
-					if shouldHidePrimaryRootName(d.Name()) {
+					if shouldHidePrimaryRootName(d.Name(), extraHidden) {
 						return filepath.SkipDir
 					}
 				}
@@ -972,6 +997,11 @@ func assignSiblingOrder[T any](list []T, key func(T) string, set func(*T, int)) 
 func (v *Vault) ListFolders() ([]FolderEntry, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
+	settings, err := v.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	extraHidden := customHiddenPrimaryRootNames(settings)
 	out := []FolderEntry{}
 	for _, folder := range AllFolders {
 		folderRoot, err := v.folderRoot(folder)
@@ -998,7 +1028,7 @@ func (v *Vault) ListFolders() ([]FolderEntry, error) {
 			if isPrimaryRoot {
 				parent := filepath.Dir(path)
 				if filepath.Clean(parent) == filepath.Clean(folderRoot) {
-					if shouldHidePrimaryRootName(d.Name()) {
+					if shouldHidePrimaryRootName(d.Name(), extraHidden) {
 						return filepath.SkipDir
 					}
 				}
@@ -1913,6 +1943,11 @@ func (v *Vault) DuplicateFolder(folder NoteFolder, subpath string) (string, erro
 func (v *Vault) ScanTasks() ([]Task, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
+	settings, err := v.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	extraHidden := customHiddenPrimaryRootNames(settings)
 	all := []Task{}
 	for _, folder := range []NoteFolder{FolderInbox, FolderQuick, FolderArchive} {
 		folderRoot, err := v.folderRoot(folder)
@@ -1934,7 +1969,7 @@ func (v *Vault) ScanTasks() ([]Task, error) {
 				if isPrimaryRoot && path != folderRoot {
 					parent := filepath.Dir(path)
 					if filepath.Clean(parent) == filepath.Clean(folderRoot) {
-						if shouldHidePrimaryRootName(d.Name()) {
+						if shouldHidePrimaryRootName(d.Name(), extraHidden) {
 							return filepath.SkipDir
 						}
 					}
@@ -1944,7 +1979,7 @@ func (v *Vault) ScanTasks() ([]Task, error) {
 			if isPrimaryRoot {
 				parent := filepath.Dir(path)
 				if filepath.Clean(parent) == filepath.Clean(folderRoot) {
-					if shouldHidePrimaryRootName(d.Name()) {
+					if shouldHidePrimaryRootName(d.Name(), extraHidden) {
 						return nil
 					}
 				}
@@ -1992,6 +2027,11 @@ func (v *Vault) SearchCapabilities() TextSearchCapabilities {
 func (v *Vault) textSearchFilesLocked() (uint64, []textSearchFile, error) {
 	h := fnv.New64a()
 	files := []textSearchFile{}
+	settings, err := v.GetSettings()
+	if err != nil {
+		return 0, nil, err
+	}
+	extraHidden := customHiddenPrimaryRootNames(settings)
 	for _, folder := range []NoteFolder{FolderInbox, FolderQuick, FolderArchive} {
 		folderRoot, err := v.folderRoot(folder)
 		if err != nil {
@@ -2011,7 +2051,7 @@ func (v *Vault) textSearchFilesLocked() (uint64, []textSearchFile, error) {
 				if isPrimaryRoot && path != folderRoot {
 					parent := filepath.Dir(path)
 					if filepath.Clean(parent) == cleanFolderRoot {
-						if shouldHidePrimaryRootName(d.Name()) {
+						if shouldHidePrimaryRootName(d.Name(), extraHidden) {
 							return filepath.SkipDir
 						}
 					}
@@ -2021,7 +2061,7 @@ func (v *Vault) textSearchFilesLocked() (uint64, []textSearchFile, error) {
 			if isPrimaryRoot {
 				parent := filepath.Dir(path)
 				if filepath.Clean(parent) == cleanFolderRoot {
-					if shouldHidePrimaryRootName(d.Name()) {
+					if shouldHidePrimaryRootName(d.Name(), extraHidden) {
 						return nil
 					}
 				}

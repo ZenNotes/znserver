@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
@@ -48,6 +49,21 @@ func (w *Watcher) getFolderPaths() map[string]string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.folderPaths
+}
+
+func (w *Watcher) reloadFolderPaths() {
+	settingsPath := filepath.Join(w.root, vaultSettingsFilePath)
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return
+	}
+	var settings struct {
+		SystemFolderPaths map[string]string `json:"systemFolderPaths"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return
+	}
+	w.SetFolderPaths(settings.SystemFolderPaths)
 }
 
 func Start(root string) (*Watcher, error) {
@@ -238,6 +254,7 @@ func (w *Watcher) handle(ev fsnotify.Event) {
 		return
 	}
 	if relPosix == vaultSettingsFilePath {
+		w.reloadFolderPaths()
 		kind := eventKind(ev)
 		if kind == "" {
 			return

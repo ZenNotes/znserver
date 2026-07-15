@@ -50,6 +50,84 @@ var defaultFolderPaths = map[NoteFolder]string{
 	FolderTrash:   string(FolderTrash),
 }
 
+var reservedFolderPathNames = map[string]struct{}{
+	"assets":         {},
+	".zennotes":      {},
+	"attachements":   {},
+	"_assets":        {},
+	"deleted-assets": {},
+	"comments":       {},
+}
+
+func isValidFolderPath(p string) bool {
+	if p == "" || len(p) > 128 {
+		return false
+	}
+	if strings.Contains(p, "/") || strings.Contains(p, "\\") {
+		return false
+	}
+	if p == "." || p == ".." || strings.HasPrefix(p, ".") {
+		return false
+	}
+	for _, c := range p {
+		if c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' ||
+			c == '|' || c == '#' || c == '^' || c == '[' || c == ']' {
+			return false
+		}
+	}
+	if _, reserved := reservedFolderPathNames[strings.ToLower(p)]; reserved {
+		return false
+	}
+	return true
+}
+
+func normalizeSystemFolderPaths(raw map[string]string) map[string]string {
+	if raw == nil {
+		return nil
+	}
+	next := map[string]string{}
+	for _, folder := range AllFolders {
+		val, ok := raw[string(folder)]
+		if !ok || val == "" {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		if !isValidFolderPath(val) {
+			continue
+		}
+		if val == string(folder) {
+			continue
+		}
+		next[string(folder)] = val
+	}
+	changed := true
+	for changed {
+		changed = false
+		for _, folder := range AllFolders {
+			val, ok := next[string(folder)]
+			if !ok {
+				continue
+			}
+			lower := strings.ToLower(val)
+			for _, other := range AllFolders {
+				if other == folder {
+					continue
+				}
+				otherResolved := strings.ToLower(resolveFolderPath(other, next))
+				if lower == otherResolved {
+					delete(next, string(folder))
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	if len(next) == 0 {
+		return nil
+	}
+	return next
+}
+
 func resolveFolderPath(folder NoteFolder, paths map[string]string) string {
 	if p, ok := paths[string(folder)]; ok {
 		return p
@@ -61,9 +139,8 @@ func buildReverseFolderMap(paths map[string]string) map[string]NoteFolder {
 	m := make(map[string]NoteFolder)
 	for _, folder := range AllFolders {
 		p := resolveFolderPath(folder, paths)
-		top := strings.SplitN(p, "/", 2)[0]
-		if top != string(folder) {
-			m[strings.ToLower(top)] = folder
+		if p != string(folder) {
+			m[strings.ToLower(p)] = folder
 		}
 	}
 	return m
