@@ -208,6 +208,15 @@ type Task struct {
 	Priority   string     `json:"priority,omitempty"`
 	Waiting    bool       `json:"waiting"`
 	Tags       []string   `json:"tags"`
+	// Kind is how the task is stored: "file" for a whole-note task
+	// (TaskNotes-style, tagged `task` with metadata in frontmatter) or
+	// empty/"inline" for a classic `- [ ]` checkbox line. The renderer
+	// branches its toggle logic on this.
+	Kind string `json:"kind,omitempty"`
+	// Scheduled and CompletedDate are file-task-only frontmatter dates
+	// (YYYY-MM-DD). They mirror the TS VaultTask shape.
+	Scheduled     string `json:"scheduled,omitempty"`
+	CompletedDate string `json:"completedDate,omitempty"`
 }
 
 // ChangeEvent — mirrors shared/ipc.ts VaultChangeEvent.
