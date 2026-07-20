@@ -367,7 +367,7 @@ func contentSecurityPolicy() string {
 		"font-src 'self' data:",
 		"worker-src 'self' blob:",
 		"connect-src 'self' ws: wss: https:",
-		"frame-src 'self' data: blob:",
+		"frame-src 'self' data: blob: https://www.youtube-nocookie.com https://player.vimeo.com",
 		"object-src 'none'",
 		"base-uri 'none'",
 		"form-action 'none'",
