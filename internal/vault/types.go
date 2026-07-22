@@ -97,11 +97,32 @@ type MonthlyNotesSettings struct {
 	TemplateID     string                    `json:"templateId,omitempty"`
 }
 
+// FileLocationMode mirrors shared/ipc.ts FileLocationMode: where a new
+// drawing / database / task file is created.
+type FileLocationMode string
+
+const (
+	FileLocationPrimary    FileLocationMode = "primary"
+	FileLocationActiveNote FileLocationMode = "active-note"
+	FileLocationFolder     FileLocationMode = "folder"
+)
+
+// FileLocationSetting mirrors shared/ipc.ts FileLocationSetting. Persisted so
+// the web client's Drawings / Databases / Tasks location choices survive a
+// round-trip instead of being silently dropped by the settings struct (#446).
+type FileLocationSetting struct {
+	Mode   FileLocationMode `json:"mode"`
+	Folder string           `json:"folder,omitempty"`
+}
+
 type VaultSettings struct {
 	PrimaryNotesLocation PrimaryNotesLocation    `json:"primaryNotesLocation"`
 	DailyNotes           DailyNotesSettings      `json:"dailyNotes"`
 	WeeklyNotes          WeeklyNotesSettings     `json:"weeklyNotes"`
 	MonthlyNotes         MonthlyNotesSettings    `json:"monthlyNotes"`
+	DrawingsLocation     FileLocationSetting     `json:"drawingsLocation"`
+	DatabasesLocation    FileLocationSetting     `json:"databasesLocation"`
+	TasksLocation        FileLocationSetting     `json:"tasksLocation"`
 	FolderIcons          map[string]FolderIconID `json:"folderIcons"`
 	// FolderColors are per-folder accent colors, keyed by `folder:subpath` (the
 	// same key as FolderIcons). Persisted so the web client's recolors survive a

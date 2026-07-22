@@ -644,6 +644,63 @@ func TestVaultSettingsWeeklyNotesRoundTrip(t *testing.T) {
 	}
 }
 
+// The web client POSTs where new drawings / databases / task files should be
+// created (Settings -> New Drawings, Databases & Tasks). Before the fix the
+// server struct had none of these three FileLocationSetting fields, so they
+// were silently dropped on decode/normalize and the segmented controls always
+// snapped back — every new task landed in the inbox regardless of the choice,
+// like #117. (#446)
+func TestVaultSettingsFileLocationsRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	v, err := New(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := v.SetSettings(VaultSettings{
+		PrimaryNotesLocation: PrimaryNotesInbox,
+		DrawingsLocation:     FileLocationSetting{Mode: FileLocationActiveNote},
+		DatabasesLocation:    FileLocationSetting{Mode: FileLocationFolder, Folder: "assets/databases"},
+		TasksLocation:        FileLocationSetting{Mode: FileLocationFolder, Folder: "Tasks"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := v.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DrawingsLocation.Mode != FileLocationActiveNote {
+		t.Errorf("drawings mode = %q, want %q", got.DrawingsLocation.Mode, FileLocationActiveNote)
+	}
+	if got.DatabasesLocation.Mode != FileLocationFolder || got.DatabasesLocation.Folder != "assets/databases" {
+		t.Errorf("databases location = %+v, want folder mode with assets/databases", got.DatabasesLocation)
+	}
+	if got.TasksLocation.Mode != FileLocationFolder || got.TasksLocation.Folder != "Tasks" {
+		t.Errorf("tasks location = %+v, want folder mode with Tasks", got.TasksLocation)
+	}
+
+	// An unknown/empty mode normalizes to primary, and folder-mode paths are
+	// trimmed of surrounding whitespace and slashes.
+	if _, err := v.SetSettings(VaultSettings{
+		PrimaryNotesLocation: PrimaryNotesInbox,
+		TasksLocation:        FileLocationSetting{Mode: FileLocationFolder, Folder: " /Projects/ "},
+		DrawingsLocation:     FileLocationSetting{Mode: "bogus"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = v.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TasksLocation.Folder != "Projects" {
+		t.Errorf("tasks folder = %q, want trimmed %q", got.TasksLocation.Folder, "Projects")
+	}
+	if got.DrawingsLocation.Mode != FileLocationPrimary {
+		t.Errorf("unknown drawings mode = %q, want normalized %q", got.DrawingsLocation.Mode, FileLocationPrimary)
+	}
+}
+
 // The web client drives the implicit-due and task-rollover behavior off two
 // daily-notes booleans. They are pointers so "absent" round-trips as unset
 // (the TS client applies the real default); an explicit value must survive a

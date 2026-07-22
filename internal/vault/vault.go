@@ -325,9 +325,12 @@ func cloneSettings(settings VaultSettings) VaultSettings {
 			LegacyPatterns: monthlyLegacyPatterns,
 			TemplateID:     settings.MonthlyNotes.TemplateID,
 		},
-		FolderIcons:  folderIcons,
-		FolderColors: folderColors,
-		Favorites:    favorites,
+		DrawingsLocation:  settings.DrawingsLocation,
+		DatabasesLocation: settings.DatabasesLocation,
+		TasksLocation:     settings.TasksLocation,
+		FolderIcons:       folderIcons,
+		FolderColors:      folderColors,
+		Favorites:         favorites,
 	}
 }
 
@@ -521,9 +524,27 @@ func normalizeVaultSettings(value VaultSettings, fallbackPrimary PrimaryNotesLoc
 			LegacyPatterns: normalizeMonthlyNoteLegacyPatterns(value.MonthlyNotes.LegacyPatterns),
 			TemplateID:     value.MonthlyNotes.TemplateID,
 		},
-		FolderIcons:  folderIcons,
-		FolderColors: folderColors,
-		Favorites:    normalizeFavorites(value.Favorites),
+		DrawingsLocation:  normalizeFileLocation(value.DrawingsLocation),
+		DatabasesLocation: normalizeFileLocation(value.DatabasesLocation),
+		TasksLocation:     normalizeFileLocation(value.TasksLocation),
+		FolderIcons:       folderIcons,
+		FolderColors:      folderColors,
+		Favorites:         normalizeFavorites(value.Favorites),
+	}
+}
+
+// normalizeFileLocation mirrors app-core's normalizeFileLocation: validate the
+// mode (unknown → primary) and, for folder mode, trim whitespace and slashes so
+// the stored value round-trips cleanly (#446).
+func normalizeFileLocation(value FileLocationSetting) FileLocationSetting {
+	switch value.Mode {
+	case FileLocationActiveNote:
+		return FileLocationSetting{Mode: FileLocationActiveNote}
+	case FileLocationFolder:
+		folder := strings.Trim(strings.TrimSpace(value.Folder), "/")
+		return FileLocationSetting{Mode: FileLocationFolder, Folder: folder}
+	default:
+		return FileLocationSetting{Mode: FileLocationPrimary}
 	}
 }
 
