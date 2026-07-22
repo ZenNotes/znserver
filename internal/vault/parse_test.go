@@ -69,6 +69,30 @@ func TestExtractTagsIgnoresIndentedFence(t *testing.T) {
 	}
 }
 
+func TestExtractTagsIncludesFrontmatterTags(t *testing.T) {
+	body := "---\ntags: [frontmatter, \"#quoted\", project/nested]\ntitle: #ignored\n---\n\n#inline"
+
+	tags := ExtractTags(body)
+	want := []string{"frontmatter", "quoted", "project/nested", "inline"}
+	if len(tags) != len(want) {
+		t.Fatalf("ExtractTags() = %#v, want %#v", tags, want)
+	}
+	for i := range want {
+		if tags[i] != want[i] {
+			t.Fatalf("ExtractTags() = %#v, want %#v", tags, want)
+		}
+	}
+}
+
+func TestExtractTagsIncludesFrontmatterTagList(t *testing.T) {
+	body := "---\ntags:\n  - daily\n  - \"#log\"\n---\n\nBody"
+
+	tags := ExtractTags(body)
+	if len(tags) != 2 || tags[0] != "daily" || tags[1] != "log" {
+		t.Fatalf("ExtractTags() = %#v, want [daily log]", tags)
+	}
+}
+
 // #205: tags in non-Latin scripts (Cyrillic, CJK, …) must be recognized.
 func TestExtractTagsUnicode(t *testing.T) {
 	body := "Заметки: #тест #ошибка/баг и 笔记 #标签 plus #ascii-1 done"
