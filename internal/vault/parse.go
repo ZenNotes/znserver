@@ -230,7 +230,7 @@ func localAssetTargetKind(target string) string {
 // --- Task parsing (mirrors shared/tasks.ts parseTasksFromBody) ---
 
 var (
-	taskLineRe      = regexp.MustCompile(`^(\s*(?:[-*+]|\d+\.)\s+)\[( |x|X|>)\](.*)$`)
+	taskLineRe      = regexp.MustCompile(`^(\s*(?:[-*+]|\d+\.)\s+)\[( |x|X|>|-)\](.*)$`)
 	inlineDueRe     = regexp.MustCompile(`(?i)(?:^|\s)due:\s*(\S+)`)
 	inlinePriority  = regexp.MustCompile(`(?i)(?:^|\s)!(high|med|medium|low|h|m|l)\b`)
 	inlineWaitingRe = regexp.MustCompile(`(?i)(?:^|\s)@waiting\b`)
@@ -320,6 +320,11 @@ const taskFileTag = "task"
 // doneStatuses are frontmatter `status:` values treated as complete (checked).
 var doneStatuses = map[string]bool{
 	"done": true, "complete": true, "completed": true, "x": true,
+}
+
+// cancelledStatuses are frontmatter `status:` values treated as cancelled (#450).
+var cancelledStatuses = map[string]bool{
+	"cancelled": true, "canceled": true,
 }
 
 var (
@@ -441,6 +446,7 @@ func parseTaskFile(path, title string, folder NoteFolder, body string) (Task, bo
 		RawText:       "",
 		Content:       content,
 		Checked:       doneStatuses[status],
+		Cancelled:     cancelledStatuses[status],
 		Due:           normalizeDueDate(firstScalar(fm["due"])),
 		Priority:      normalizePriority(firstScalar(fm["priority"])),
 		Waiting:       status == "waiting",
@@ -491,6 +497,7 @@ func ParseTasks(path, title string, folder NoteFolder, body string) []Task {
 		checkedChar := m[2]
 		tail := strings.TrimPrefix(m[3], "]")
 		checked := checkedChar == "x" || checkedChar == "X"
+		cancelled := checkedChar == "-"
 
 		due := ""
 		priority := ""
@@ -550,6 +557,7 @@ func ParseTasks(path, title string, folder NoteFolder, body string) []Task {
 			RawText:    line,
 			Content:    content,
 			Checked:    checked,
+			Cancelled:  cancelled,
 			Due:        due,
 			Priority:   priority,
 			Waiting:    waiting,

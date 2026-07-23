@@ -83,3 +83,35 @@ func TestExtractTagsUnicode(t *testing.T) {
 		}
 	}
 }
+
+// #450: `[-]` cancelled tasks must be parsed (not dropped) and flagged cancelled.
+func TestParseTasksRecognizesCancelled(t *testing.T) {
+	body := "- [ ] open\n- [x] done\n- [>] gone\n- [-] scrapped\n"
+	tasks := ParseTasks("inbox/t.md", "t", FolderInbox, body)
+	if len(tasks) != 4 {
+		t.Fatalf("expected 4 tasks (none dropped), got %d", len(tasks))
+	}
+	byContent := map[string]Task{}
+	for _, tk := range tasks {
+		byContent[tk.Content] = tk
+	}
+	if c, ok := byContent["scrapped"]; !ok {
+		t.Fatal("cancelled task line was dropped")
+	} else if !c.Cancelled || c.Checked {
+		t.Errorf("scrapped: Cancelled=%v Checked=%v, want Cancelled=true Checked=false", c.Cancelled, c.Checked)
+	}
+	if byContent["open"].Cancelled || byContent["done"].Cancelled {
+		t.Error("open/done tasks should not be cancelled")
+	}
+}
+
+func TestParseTaskFileCancelledStatus(t *testing.T) {
+	body := "---\ntags: [task]\ntitle: Rewrite\nstatus: cancelled\n---\n\nAbandoned.\n"
+	task, ok := parseTaskFile("inbox/x.md", "x", FolderInbox, body)
+	if !ok {
+		t.Fatal("expected a file task")
+	}
+	if !task.Cancelled || task.Checked {
+		t.Errorf("Cancelled=%v Checked=%v, want Cancelled=true Checked=false", task.Cancelled, task.Checked)
+	}
+}
