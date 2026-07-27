@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -111,10 +112,26 @@ func logStartupBanner(cfg config.Config) {
 		tlsMode = "plain HTTP (set ZENNOTES_BEHIND_TLS=1 once a TLS proxy is in front)"
 	}
 	log.Printf("tls:          %s", tlsMode)
+	log.Printf("cors:         %s", corsMode(cfg))
 	if !bindIsLoopback(cfg.Bind) && !cfg.BehindTLS {
 		log.Printf("WARNING: bound to a non-loopback address without ZENNOTES_BEHIND_TLS=1.")
 		log.Printf("WARNING: put a TLS-terminating reverse proxy in front before exposing publicly.")
 	}
+}
+
+// corsMode describes the effective cross-origin policy at a glance, so an
+// operator can see what is allowed at startup instead of inferring it from
+// rejection lines after a client fails. (#482)
+func corsMode(cfg config.Config) string {
+	for _, origin := range cfg.AllowedOrigins {
+		if strings.TrimSpace(origin) == httpserver.AllowAllOrigins {
+			return "any origin (ZENNOTES_ALLOWED_ORIGINS=*; credentials withheld cross-origin)"
+		}
+	}
+	if len(cfg.AllowedOrigins) == 0 {
+		return "same-origin only (set ZENNOTES_ALLOWED_ORIGINS for browser or WebView clients)"
+	}
+	return fmt.Sprintf("same-origin plus %s", strings.Join(cfg.AllowedOrigins, ", "))
 }
 
 func warnInsecureExposureLoop(ctx context.Context) {

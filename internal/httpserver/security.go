@@ -206,10 +206,45 @@ func (l *attemptLimiter) reset(key string) {
 	l.mu.Unlock()
 }
 
+// AllowAllOrigins is the wildcard operators reach for first. Comparing it
+// literally, as any other string, meant ZENNOTES_ALLOWED_ORIGINS="*" locked
+// everything out with no hint that it was unsupported. (#482)
+const AllowAllOrigins = "*"
+
+// NullOrigin is what a browser sends for an opaque origin — a sandboxed
+// iframe, a data: document, or a page loaded over file:// in most engines.
+const NullOrigin = "null"
+
+// normalizeOrigin canonicalises an origin for comparison, and returns "" for
+// anything that isn't one.
+//
+// Origins are not always scheme+host. Browsers send the literal "null" for
+// opaque origins, and "file://" (no host) for local pages in some engines;
+// requiring a host silently dropped both, so an operator who listed them
+// verbatim still saw them rejected with no way to allow them. Both are
+// preserved here so they can be configured. (#482)
 func normalizeOrigin(raw string) string {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
 		return ""
+	}
+	if trimmed == AllowAllOrigins {
+		return AllowAllOrigins
+	}
+	if strings.EqualFold(trimmed, NullOrigin) {
+		return NullOrigin
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" {
+		return ""
+	}
+	if parsed.Host == "" {
+		// Scheme-only origin such as "file://". Anything else without a host —
+		// "mailto:someone", "https:///path" — is not an origin.
+		if parsed.Opaque != "" || parsed.Path != "" {
+			return ""
+		}
+		return strings.ToLower(parsed.Scheme) + "://"
 	}
 	return fmt.Sprintf("%s://%s", strings.ToLower(parsed.Scheme), strings.ToLower(parsed.Host))
 }
@@ -299,39 +334,64 @@ func isLoopbackOrigin(origin string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func (s *Server) isAllowedOrigin(r *http.Request, origin string) bool {
+// originDecision is how a request's Origin fared: whether it may be echoed
+// back at all, and whether credentials (the session cookie) may ride with it.
+type originDecision struct {
+	allowed bool
+	// Credentials are withheld for a wildcard match: echoing
+	// Access-Control-Allow-Origin for *any* site alongside
+	// Allow-Credentials: true would let any page a user visits drive their
+	// session. Bearer-token clients are unaffected — they attach the token
+	// themselves. (#482)
+	credentials bool
+}
+
+func (s *Server) originDecisionFor(r *http.Request, origin string) originDecision {
 	if origin == "" {
-		return true
+		return originDecision{allowed: true, credentials: true}
 	}
 	normalized := normalizeOrigin(origin)
 	if normalized == "" {
-		return false
+		return originDecision{}
 	}
 	if normalized == s.requestOrigin(r) {
-		return true
+		return originDecision{allowed: true, credentials: true}
 	}
 
 	cfg := s.currentConfig()
+	wildcard := false
 	for _, allowed := range cfg.AllowedOrigins {
-		if normalizeOrigin(allowed) == normalized {
-			return true
+		switch normalizeOrigin(allowed) {
+		case normalized:
+			return originDecision{allowed: true, credentials: true}
+		case AllowAllOrigins:
+			wildcard = true
 		}
+	}
+	if wildcard {
+		return originDecision{allowed: true}
 	}
 
 	if (cfg.DevMode || isLoopbackBind(cfg.Bind)) && isLoopbackOrigin(normalized) {
-		return true
+		return originDecision{allowed: true, credentials: true}
 	}
 
-	return false
+	return originDecision{}
+}
+
+func (s *Server) isAllowedOrigin(r *http.Request, origin string) bool {
+	return s.originDecisionFor(r, origin).allowed
 }
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := strings.TrimSpace(r.Header.Get("Origin"))
 		if origin != "" {
-			if s.isAllowedOrigin(r, origin) {
+			if decision := s.originDecisionFor(r, origin); decision.allowed {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				if decision.credentials {
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+				}
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, If-Match")
 				w.Header().Add("Vary", "Origin")
@@ -354,7 +414,13 @@ func (s *Server) logCORSRejection(origin string) {
 	if _, loaded := s.loggedOrigins.LoadOrStore(origin, struct{}{}); loaded {
 		return
 	}
-	log.Printf("CORS rejected origin %q; add it to ZENNOTES_ALLOWED_ORIGINS to allow it", origin)
+	log.Printf(
+		"CORS rejected origin %q; add it verbatim to ZENNOTES_ALLOWED_ORIGINS (comma-separated) to allow it, "+
+			"or set ZENNOTES_ALLOWED_ORIGINS=* to allow any origin without credentials. "+
+			"The ZenNotes desktop app talks to the server from its main process and sends no Origin, so it is "+
+			"never affected by this — browser and WebView clients are.",
+		origin,
+	)
 }
 
 func contentSecurityPolicy() string {
