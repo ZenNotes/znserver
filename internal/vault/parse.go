@@ -16,7 +16,7 @@ var (
 	wikilinkRe    = regexp.MustCompile(`(!?)\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]`)
 	linkRe        = regexp.MustCompile(`(!?)\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)`)
 	embedRe       = regexp.MustCompile(`!\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]`)
-	frontmatterRe = regexp.MustCompile(`(?s)\A---\n(.*?)\n---\n?`)
+	frontmatterRe = regexp.MustCompile(`(?s)\A---\r?\n(.*?)\r?\n---\r?\n?`)
 	headingRe     = regexp.MustCompile(`(?m)^#{1,6}\s+`)
 	imageMdRe     = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)
 	mdLinkRe      = regexp.MustCompile(`\[([^\]]+)\]\([^)]*\)`)
@@ -77,14 +77,26 @@ func stripCodeContent(body string) string {
 	return out
 }
 
-// ExtractTags returns unique #tags from a markdown body, ignoring code.
+// ExtractTags returns unique tags from first-class frontmatter `tags` and inline #tags.
 func ExtractTags(body string) []string {
-	if !strings.Contains(body, "#") {
-		return []string{}
-	}
-	stripped := stripCodeContent(body)
 	seen := map[string]bool{}
 	out := []string{}
+	if m := frontmatterRe.FindStringSubmatch(body); len(m) >= 2 {
+		fm := parseTaskFrontmatter(m[1])
+		for _, raw := range fm["tags"] {
+			tag := strings.TrimPrefix(strings.TrimSpace(raw), "#")
+			if tag != "" && !seen[tag] {
+				seen[tag] = true
+				out = append(out, tag)
+			}
+		}
+	}
+
+	markdownBody := frontmatterRe.ReplaceAllString(body, "")
+	if !strings.Contains(markdownBody, "#") {
+		return out
+	}
+	stripped := stripCodeContent(markdownBody)
 	for _, m := range tagRe.FindAllStringSubmatch(stripped, -1) {
 		if len(m) >= 2 {
 			tag := m[1]
