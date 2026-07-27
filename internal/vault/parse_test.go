@@ -84,6 +84,13 @@ func TestExtractTagsIncludesFrontmatterTags(t *testing.T) {
 	}
 }
 
+func TestExtractTagsSplitsBareFrontmatterScalar(t *testing.T) {
+	tags := ExtractTags("---\ntags: daily, work\n---\nbody")
+	if len(tags) != 2 || tags[0] != "daily" || tags[1] != "work" {
+		t.Fatalf("ExtractTags() = %#v, want [daily work]", tags)
+	}
+}
+
 func TestExtractTagsIncludesFrontmatterTagList(t *testing.T) {
 	body := "---\ntags:\n  - daily\n  - \"#log\"\n---\n\nBody"
 

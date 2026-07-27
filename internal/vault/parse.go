@@ -3,6 +3,7 @@ package vault
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Regexes below mirror the TS extractors in src/main/vault.ts. They are
@@ -84,10 +85,17 @@ func ExtractTags(body string) []string {
 	if m := frontmatterRe.FindStringSubmatch(body); len(m) >= 2 {
 		fm := parseTaskFrontmatter(m[1])
 		for _, raw := range fm["tags"] {
-			tag := strings.TrimPrefix(strings.TrimSpace(raw), "#")
-			if tag != "" && !seen[tag] {
-				seen[tag] = true
-				out = append(out, tag)
+			// A bare scalar splits on commas and whitespace: `tags: daily, work`
+			// is two tags and a tag can contain neither. Kept in sync with
+			// frontmatterTags in packages/shared-domain/src/frontmatter.ts.
+			for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+				return r == ',' || unicode.IsSpace(r)
+			}) {
+				tag := strings.TrimPrefix(part, "#")
+				if tag != "" && !seen[tag] {
+					seen[tag] = true
+					out = append(out, tag)
+				}
 			}
 		}
 	}
@@ -350,7 +358,7 @@ var (
 // then indented `  - a`). Keys are lower-cased; every value is stored as a
 // slice (a scalar becomes a single-element slice). Best-effort and never
 // panics: just enough YAML for task files, not a full parser. Mirrors
-// parseTaskFrontmatter in packages/shared-domain/src/tasks.ts.
+// parseFrontmatterFields in packages/shared-domain/src/frontmatter.ts.
 func parseTaskFrontmatter(block string) map[string][]string {
 	data := map[string][]string{}
 	listKey := ""
