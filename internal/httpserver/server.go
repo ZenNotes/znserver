@@ -283,6 +283,14 @@ func writeError(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// A missing file is the caller's answer, not our failure. Clients rely on
+	// this to tell "absent" apart from "broken": desktop remote databases map
+	// 404 to null and surface everything else (they tolerate 500 from servers
+	// older than this line, which returned it for ENOENT).
+	if errors.Is(err, os.ErrNotExist) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	log.Printf("handler error: %v", err)
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
