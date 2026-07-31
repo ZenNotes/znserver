@@ -118,6 +118,73 @@ func TestStartOrDisabledFallsBackWhenDisabled(t *testing.T) {
 	enabled.Close()
 }
 
+func writeVaultSettings(t *testing.T, root, body string) {
+	t.Helper()
+	dir := filepath.Join(root, internalVaultDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "vault.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReloadFolderPathsNormalizesLikeTheVault(t *testing.T) {
+	root := t.TempDir()
+	w := newTestWatcher(t, root)
+
+	// `assets` is a reserved directory name, so the vault's normalizer drops the
+	// override. Taking it at face value routed every assets/ event to Trash
+	// while the vault kept classifying those paths as assets.
+	writeVaultSettings(t, root, `{"systemFolderPaths":{"trash":"assets","quick":"scratch"}}`)
+	w.reloadFolderPaths()
+
+	paths := w.getFolderPaths()
+	if _, rejected := paths["trash"]; rejected {
+		t.Fatalf("reserved override survived normalization: %v", paths)
+	}
+	if paths["quick"] != "scratch" {
+		t.Fatalf("valid override was lost: %v", paths)
+	}
+
+	folder, ok := vault.FolderForRelativePathWithSettings("assets/image.png", paths)
+	if ok {
+		t.Fatalf("assets/image.png classified as %q; it is not a note folder", folder)
+	}
+
+	// A deleted vault.json means no overrides, matching what the vault reports.
+	if err := os.Remove(filepath.Join(root, vaultSettingsFilePath)); err != nil {
+		t.Fatal(err)
+	}
+	w.reloadFolderPaths()
+	if got := w.getFolderPaths(); len(got) != 0 {
+		t.Fatalf("folder paths after vault.json removal = %v, want none", got)
+	}
+}
+
+func TestWatcherClassifiesRemappedFolderEvents(t *testing.T) {
+	root := t.TempDir()
+	w := newTestWatcher(t, root)
+	writeVaultSettings(t, root, `{"systemFolderPaths":{"trash":"deleted"}}`)
+	w.reloadFolderPaths()
+
+	ch, unsub := w.Subscribe()
+	defer unsub()
+
+	note := filepath.Join(root, "deleted", "Gone.md")
+	if err := os.MkdirAll(filepath.Dir(note), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(note, []byte("gone"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w.handle(fsnotify.Event{Name: note, Op: fsnotify.Write})
+	ev := recvChange(t, ch)
+	if ev.Folder != vault.FolderTrash || ev.Path != "deleted/Gone.md" {
+		t.Fatalf("event = %+v, want {change deleted/Gone.md trash}", ev)
+	}
+}
+
 func TestWatcherDoesNotSurfaceInternalDirAsFolder(t *testing.T) {
 	root := t.TempDir()
 	w := newTestWatcher(t, root)

@@ -51,10 +51,21 @@ func (w *Watcher) getFolderPaths() map[string]string {
 	return w.folderPaths
 }
 
+// reloadFolderPaths re-reads the folder overrides after vault.json changes.
+// The raw map goes through the vault's normalizer, exactly as the paths seeded
+// at startup did (main.go reads them from vault.GetSettings). A value the
+// normalizer rejects, `trash: "assets"` say, would otherwise make the watcher
+// route assets/ events to Trash while the vault, which classifies against the
+// normalized settings, disagrees.
 func (w *Watcher) reloadFolderPaths() {
 	settingsPath := filepath.Join(w.root, vaultSettingsFilePath)
 	raw, err := os.ReadFile(settingsPath)
 	if err != nil {
+		// A deleted vault.json means no overrides, which is what the vault
+		// reports too. Any other read error leaves the last known paths in place.
+		if os.IsNotExist(err) {
+			w.SetFolderPaths(nil)
+		}
 		return
 	}
 	var settings struct {
@@ -63,7 +74,7 @@ func (w *Watcher) reloadFolderPaths() {
 	if err := json.Unmarshal(raw, &settings); err != nil {
 		return
 	}
-	w.SetFolderPaths(settings.SystemFolderPaths)
+	w.SetFolderPaths(vault.NormalizeSystemFolderPaths(settings.SystemFolderPaths))
 }
 
 func Start(root string) (*Watcher, error) {

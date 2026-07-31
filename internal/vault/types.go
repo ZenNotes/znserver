@@ -82,6 +82,15 @@ func isValidFolderPath(p string) bool {
 	return true
 }
 
+// NormalizeSystemFolderPaths validates a raw systemFolderPaths map the way the
+// vault settings reader does. Exported so callers that read vault.json without
+// going through GetSettings (the watcher) classify against the same paths the
+// vault itself uses. Mirrors normalizeSystemFolderPaths in
+// packages/shared-domain/src/system-folder-paths.ts.
+func NormalizeSystemFolderPaths(raw map[string]string) map[string]string {
+	return normalizeSystemFolderPaths(raw)
+}
+
 func normalizeSystemFolderPaths(raw map[string]string) map[string]string {
 	if raw == nil {
 		return nil
@@ -97,6 +106,14 @@ func normalizeSystemFolderPaths(raw map[string]string) map[string]string {
 			continue
 		}
 		if val == string(folder) {
+			continue
+		}
+		// Never let a folder claim ANOTHER folder's default name, even when that
+		// other folder has moved out of the way: {inbox: "archive", archive:
+		// "inbox"} resolves without collision, and the swap it describes reads
+		// backwards on every surface that classifies a path by its top segment
+		// (and in every other app looking at the same directory).
+		if claimsAnotherDefaultName(folder, val) {
 			continue
 		}
 		next[string(folder)] = val
@@ -129,6 +146,19 @@ func normalizeSystemFolderPaths(raw map[string]string) map[string]string {
 	return next
 }
 
+func claimsAnotherDefaultName(folder NoteFolder, val string) bool {
+	lower := strings.ToLower(val)
+	for _, other := range AllFolders {
+		if other == folder {
+			continue
+		}
+		if lower == defaultFolderPaths[other] {
+			return true
+		}
+	}
+	return false
+}
+
 func resolveFolderPath(folder NoteFolder, paths map[string]string) string {
 	if p, ok := paths[string(folder)]; ok {
 		return p
@@ -136,15 +166,24 @@ func resolveFolderPath(folder NoteFolder, paths map[string]string) string {
 	return defaultFolderPaths[folder]
 }
 
-func buildReverseFolderMap(paths map[string]string) map[string]NoteFolder {
-	m := make(map[string]NoteFolder)
+// SystemFolderForDirName returns the system folder that owns a top-level
+// directory name, or false when the name belongs to no system folder (an
+// ordinary user folder, an assets dir, anything else).
+//
+// This is THE classification rule for a path's first segment, because only the
+// RESOLVED name of each folder counts: with inbox remapped to `01 - Entry`,
+// `01 - Entry/` is the inbox and a directory literally named `inbox/` is just a
+// user folder. Case-insensitive, since macOS and Windows preserve whatever case
+// the directory was created with (#186). Mirrors systemFolderForDirName in
+// packages/shared-domain/src/system-folder-paths.ts.
+func SystemFolderForDirName(name string, paths map[string]string) (NoteFolder, bool) {
+	lower := strings.ToLower(name)
 	for _, folder := range AllFolders {
-		p := resolveFolderPath(folder, paths)
-		if p != string(folder) {
-			m[strings.ToLower(p)] = folder
+		if strings.ToLower(resolveFolderPath(folder, paths)) == lower {
+			return folder, true
 		}
 	}
-	return m
+	return "", false
 }
 
 func FolderForRelativePath(rel string) (NoteFolder, bool) {
@@ -154,20 +193,16 @@ func FolderForRelativePath(rel string) (NoteFolder, bool) {
 func FolderForRelativePathWithSettings(rel string, paths map[string]string) (NoteFolder, bool) {
 	normalized := filepath.ToSlash(rel)
 	top := strings.SplitN(normalized, "/", 2)[0]
-	if IsValidFolder(NoteFolder(top)) {
-		return NoteFolder(top), true
-	}
 	if top == "" || strings.HasPrefix(top, ".") {
 		return "", false
 	}
-	if len(paths) > 0 {
-		if reverseMap := buildReverseFolderMap(paths); len(reverseMap) > 0 {
-			if folder, ok := reverseMap[strings.ToLower(top)]; ok {
-				return folder, true
-			}
-		}
+	if folder, ok := SystemFolderForDirName(top, paths); ok {
+		return folder, true
 	}
-	if _, reserved := reservedRootNames[top]; reserved {
+	// Only the dirs that are reserved no matter where the system folders live.
+	// A default name whose folder has moved (`inbox/` once inbox is `bucket`)
+	// is an ordinary user folder and must classify as one.
+	if _, reserved := reservedNonSystemRootNames[top]; reserved {
 		return "", false
 	}
 	return FolderInbox, true
