@@ -44,7 +44,114 @@ func IsValidFolder(f NoteFolder) bool {
 
 var AllFolders = []NoteFolder{FolderInbox, FolderQuick, FolderArchive, FolderTrash}
 
+var defaultFolderPaths = map[NoteFolder]string{
+	FolderInbox:   string(FolderInbox),
+	FolderQuick:   string(FolderQuick),
+	FolderArchive: string(FolderArchive),
+	FolderTrash:   string(FolderTrash),
+}
+
+var reservedFolderPathNames = map[string]struct{}{
+	"assets":         {},
+	".zennotes":      {},
+	"attachements":   {},
+	"_assets":        {},
+	"deleted-assets": {},
+	"comments":       {},
+}
+
+func isValidFolderPath(p string) bool {
+	if p == "" || len(p) > 128 {
+		return false
+	}
+	if strings.Contains(p, "/") || strings.Contains(p, "\\") {
+		return false
+	}
+	if p == "." || p == ".." || strings.HasPrefix(p, ".") {
+		return false
+	}
+	for _, c := range p {
+		if c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' ||
+			c == '|' || c == '#' || c == '^' || c == '[' || c == ']' {
+			return false
+		}
+	}
+	if _, reserved := reservedFolderPathNames[strings.ToLower(p)]; reserved {
+		return false
+	}
+	return true
+}
+
+func normalizeSystemFolderPaths(raw map[string]string) map[string]string {
+	if raw == nil {
+		return nil
+	}
+	next := map[string]string{}
+	for _, folder := range AllFolders {
+		val, ok := raw[string(folder)]
+		if !ok || val == "" {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		if !isValidFolderPath(val) {
+			continue
+		}
+		if val == string(folder) {
+			continue
+		}
+		next[string(folder)] = val
+	}
+	changed := true
+	for changed {
+		changed = false
+		for _, folder := range AllFolders {
+			val, ok := next[string(folder)]
+			if !ok {
+				continue
+			}
+			lower := strings.ToLower(val)
+			for _, other := range AllFolders {
+				if other == folder {
+					continue
+				}
+				otherResolved := strings.ToLower(resolveFolderPath(other, next))
+				if lower == otherResolved {
+					delete(next, string(folder))
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	if len(next) == 0 {
+		return nil
+	}
+	return next
+}
+
+func resolveFolderPath(folder NoteFolder, paths map[string]string) string {
+	if p, ok := paths[string(folder)]; ok {
+		return p
+	}
+	return defaultFolderPaths[folder]
+}
+
+func buildReverseFolderMap(paths map[string]string) map[string]NoteFolder {
+	m := make(map[string]NoteFolder)
+	for _, folder := range AllFolders {
+		p := resolveFolderPath(folder, paths)
+		if p != string(folder) {
+			m[strings.ToLower(p)] = folder
+		}
+	}
+	return m
+}
+
 func FolderForRelativePath(rel string) (NoteFolder, bool) {
+	return FolderForRelativePathWithSettings(rel, nil)
+}
+
+func FolderForRelativePathWithSettings(rel string, paths map[string]string) (NoteFolder, bool) {
 	normalized := filepath.ToSlash(rel)
 	top := strings.SplitN(normalized, "/", 2)[0]
 	if IsValidFolder(NoteFolder(top)) {
@@ -52,6 +159,13 @@ func FolderForRelativePath(rel string) (NoteFolder, bool) {
 	}
 	if top == "" || strings.HasPrefix(top, ".") {
 		return "", false
+	}
+	if len(paths) > 0 {
+		if reverseMap := buildReverseFolderMap(paths); len(reverseMap) > 0 {
+			if folder, ok := reverseMap[strings.ToLower(top)]; ok {
+				return folder, true
+			}
+		}
 	}
 	if _, reserved := reservedRootNames[top]; reserved {
 		return "", false
@@ -131,6 +245,9 @@ type VaultSettings struct {
 	// Favorites are note paths or `folder:subpath` keys pinned to the top of
 	// the sidebar. Persisted so the web client's favorites survive a round-trip.
 	Favorites []string `json:"favorites"`
+	// Per-system-folder on-disk path overrides (#115). Maps internal folder IDs
+	// to vault-relative directory names. Absent entries fall back to the default.
+	SystemFolderPaths map[string]string `json:"systemFolderPaths,omitempty"`
 }
 
 // NoteMeta — vault-relative note metadata. Mirrors shared/ipc.ts NoteMeta.
