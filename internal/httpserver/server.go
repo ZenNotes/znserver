@@ -295,6 +295,51 @@ func writeError(w http.ResponseWriter, err error) {
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
+// Error body for the vault-picker routes (/fs/browse, /vault/select).
+//
+// Every other route answers an error with plain text, which is fine because
+// nothing has to tell those errors apart from anything else. These two do: a
+// server that predates the routes answers with the router's own plain-text
+// 404, and a current server answers a vanished directory with a 404 of its
+// own. Only the JSON body distinguishes them, so the web client shows "that
+// directory is gone" instead of "upgrade your server" (and vice versa).
+type routeErrorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func writeCodedError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	message := "internal server error"
+	var statusErr httpStatusError
+	switch {
+	case errors.As(err, &statusErr):
+		status, message = statusErr.code, statusErr.Error()
+	case errors.Is(err, vault.ErrPathEscape):
+		status, message = http.StatusBadRequest, err.Error()
+	case errors.Is(err, os.ErrNotExist):
+		status, message = http.StatusNotFound, err.Error()
+	default:
+		log.Printf("handler error: %v", err)
+	}
+	writeJSON(w, status, routeErrorBody{Code: errorCodeForStatus(status), Message: message})
+}
+
+func errorCodeForStatus(status int) string {
+	switch status {
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusForbidden:
+		return "forbidden"
+	case http.StatusBadRequest:
+		return "bad_request"
+	case http.StatusConflict:
+		return "conflict"
+	default:
+		return "internal_error"
+	}
+}
+
 func readJSON[T any](r *http.Request, out *T) error {
 	return json.NewDecoder(r.Body).Decode(out)
 }
@@ -375,12 +420,12 @@ func (s *Server) selectVault(w http.ResponseWriter, r *http.Request) {
 	}
 	allowedPath, err := s.ensureBrowsePathAllowed(req.Path)
 	if err != nil {
-		writeError(w, err)
+		writeCodedError(w, err)
 		return
 	}
 	nextVault, err := s.switchVaultRoot(allowedPath)
 	if err != nil {
-		writeError(w, err)
+		writeCodedError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, nextVault.Info())
@@ -460,13 +505,13 @@ func (s *Server) browseDirectories(w http.ResponseWriter, r *http.Request) {
 	}
 	target, err := s.ensureBrowsePathAllowed(target)
 	if err != nil {
-		writeError(w, err)
+		writeCodedError(w, err)
 		return
 	}
 
 	dirEntries, err := os.ReadDir(target)
 	if err != nil {
-		writeError(w, err)
+		writeCodedError(w, err)
 		return
 	}
 
