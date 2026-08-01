@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ZenNotes/zennotes/apps/server/internal/config"
@@ -285,10 +286,17 @@ func writeError(w http.ResponseWriter, err error) {
 	}
 	// A missing file is the caller's answer, not our failure. Clients rely on
 	// this to tell "absent" apart from "broken": desktop remote databases map
-	// 404 to null and surface everything else (they tolerate 500 from servers
-	// older than this line, which returned it for ENOENT).
+	// 404 to null and surface everything else.
 	if errors.Is(err, os.ErrNotExist) {
 		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	// Asking to read a directory as a file is a malformed request, not a
+	// server failure, and saying 500 sent one report chasing a broken server
+	// that was working correctly. EISDIR is what a `.base` folder read as
+	// `data.csv` produces, so name it.
+	if errors.Is(err, syscall.EISDIR) {
+		http.Error(w, "path is a directory, not a file", http.StatusBadRequest)
 		return
 	}
 	log.Printf("handler error: %v", err)
@@ -368,6 +376,13 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 		"supportsVaultSelection":    true,
 		"supportsDirectoryBrowsing": true,
 		"supportsWatch":             true,
+		// Says out loud that a missing file answers 404 rather than 500.
+		// Databases are composed from file reads where "absent" and "failed"
+		// mean opposite things (see remote-absence.ts), and a server that
+		// cannot say which is which forced clients to probe for the answer.
+		// Absent from every server before 2.20.2, which is exactly what makes
+		// it usable as a signal.
+		"reportsMissingAsNotFound": true,
 	})
 }
 
