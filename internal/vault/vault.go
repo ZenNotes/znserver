@@ -1118,9 +1118,16 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 				if strings.HasPrefix(d.Name(), ".") && path != folderRoot {
 					return filepath.SkipDir
 				}
-				if isFormDirName(d.Name()) {
-					return filepath.SkipDir
-				}
+				// A `<Name>.base` folder is NOT skipped here. Its record pages are
+				// real notes: the user opens them, writes in them, and links to
+				// them, and the desktop lists them exactly like any other note.
+				// Skipping the folder made every wikilink into a database resolve
+				// to nothing on a remote vault while working locally (#527). Only
+				// `.md` files are collected below, so the database's own data.csv
+				// and schema.json still never surface as notes. ListFolders and
+				// ListAssets DO skip it, deliberately: the internals are not loose
+				// folders or attachments, and the renderer draws the database
+				// itself rather than its directory.
 				if isPrimaryRoot && path != folderRoot {
 					parent := filepath.Dir(path)
 					if filepath.Clean(parent) == filepath.Clean(folderRoot) {
@@ -2178,9 +2185,10 @@ func (v *Vault) ScanTasks() ([]Task, error) {
 				if strings.HasPrefix(d.Name(), ".") && path != folderRoot {
 					return filepath.SkipDir
 				}
-				if isFormDirName(d.Name()) {
-					return filepath.SkipDir // database folder — not loose notes
-				}
+				// Not skipped, for the same reason as ListNotes: a database's
+				// record pages are notes, and a task written in one counts. The
+				// desktop scans tasks straight off its note list, so skipping here
+				// would have the two disagree about what a note is (#527).
 				if isPrimaryRoot && path != folderRoot {
 					parent := filepath.Dir(path)
 					if filepath.Clean(parent) == filepath.Clean(folderRoot) {

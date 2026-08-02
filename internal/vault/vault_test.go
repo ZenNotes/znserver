@@ -861,9 +861,17 @@ func TestDatabaseBaseFolderListedButInternalsHidden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// #527: a database's record pages ARE notes. The desktop lists them, so a
+	// remote vault must too, or every wikilink into a database resolves to
+	// nothing on the server while working locally.
+	if !hasNotePath(notes, "inbox/Books.base/Dune.md") {
+		t.Error("ListNotes dropped a database record page, so wikilinks into the database cannot resolve")
+	}
+	// The database's own machinery is not a note, and never was: only `.md`
+	// files are collected, so data.csv and schema.json cannot surface here.
 	for _, n := range notes {
-		if strings.Contains(n.Path, ".base") {
-			t.Errorf("ListNotes leaked a database-internal note: %s", n.Path)
+		if strings.HasSuffix(n.Path, "data.csv") || strings.HasSuffix(n.Path, "schema.json") {
+			t.Errorf("ListNotes leaked database internals as a note: %s", n.Path)
 		}
 	}
 	if !hasNotePath(notes, "inbox/Regular.md") {
