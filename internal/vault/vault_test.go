@@ -217,6 +217,39 @@ func TestReadNoteRefusesSymlinkOutsideVault(t *testing.T) {
 	}
 }
 
+// A `.base` database is a directory, and a client that treats one as a note
+// asks to read it as a file. The answer has to be the same everywhere: the
+// errno differs by platform (EISDIR on Unix, ERROR_INVALID_FUNCTION on
+// Windows), which is why the HTTP layer once said 400 on macOS and Linux and
+// 500 on Windows for the identical request. ReadNote classifies it from its
+// own stat, so this test means the same thing on every runner.
+func TestReadNoteRejectsADirectoryOnEveryPlatform(t *testing.T) {
+	root := t.TempDir()
+	v, err := New(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(v.Root(), "inbox", "Db.base"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(v.Root(), "inbox", "Real.md"), []byte("# Real\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := v.ReadNote("inbox/Db.base"); !errors.Is(err, ErrIsDirectory) {
+		t.Fatalf("reading a directory: got %v, want ErrIsDirectory", err)
+	}
+	// The classification must not swallow the two answers around it: a real
+	// note still reads, and a missing file inside that directory is still
+	// absent rather than "is a directory".
+	if _, err := v.ReadNote("inbox/Real.md"); err != nil {
+		t.Fatalf("reading a note: %v", err)
+	}
+	if _, err := v.ReadNote("inbox/Db.base/data.csv"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing file: got %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestWriteNoteRefusesSymlinkOutsideVault(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on windows")

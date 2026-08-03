@@ -293,9 +293,15 @@ func writeError(w http.ResponseWriter, err error) {
 	}
 	// Asking to read a directory as a file is a malformed request, not a
 	// server failure, and saying 500 sent one report chasing a broken server
-	// that was working correctly. EISDIR is what a `.base` folder read as
-	// `data.csv` produces, so name it.
-	if errors.Is(err, syscall.EISDIR) {
+	// that was working correctly.
+	//
+	// The vault layer classifies this from its own stat, because the errno is
+	// not portable: reading a directory gives EISDIR on Unix and
+	// ERROR_INVALID_FUNCTION on Windows, which is how this answered 400 on
+	// macOS and Linux and 500 on Windows for two weeks. EISDIR stays as a
+	// fallback for read paths that have not been classified, where it is still
+	// right on the platforms that produce it.
+	if errors.Is(err, vault.ErrIsDirectory) || errors.Is(err, syscall.EISDIR) {
 		http.Error(w, "path is a directory, not a file", http.StatusBadRequest)
 		return
 	}

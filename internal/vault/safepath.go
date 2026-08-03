@@ -9,6 +9,14 @@ import (
 
 var ErrPathEscape = errors.New("path escapes vault root")
 
+// ErrIsDirectory is returned when a caller asks to read a directory as a file,
+// which a client does by accident whenever it treats a `.base` database folder
+// as a note. It is classified here, from a stat the read already performs,
+// rather than from the errno the read returns: Unix answers EISDIR but Windows
+// answers ERROR_INVALID_FUNCTION ("Incorrect function"), so an errno test makes
+// the same request a 400 on one platform and a 500 on another.
+var ErrIsDirectory = errors.New("path is a directory, not a file")
+
 // SafeJoin cleans a user-supplied relative POSIX path and joins it onto
 // `root`, refusing anything that resolves outside `root`. Any existing
 // component of the joined path that is a symbolic link is resolved and

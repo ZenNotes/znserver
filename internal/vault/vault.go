@@ -1449,6 +1449,11 @@ func (v *Vault) ReadNote(rel string) (NoteContent, error) {
 	if err != nil {
 		return NoteContent{}, err
 	}
+	// The stat above already knows the answer, so say it here instead of
+	// reading and then guessing from the platform's errno.
+	if info.IsDir() {
+		return NoteContent{}, ErrIsDirectory
+	}
 	body, err := os.ReadFile(abs)
 	if err != nil {
 		return NoteContent{}, err
