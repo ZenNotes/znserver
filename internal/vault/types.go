@@ -378,11 +378,15 @@ type Task struct {
 	Content    string     `json:"content"`
 	Checked    bool       `json:"checked"`
 	// Cancelled is true for a `[-]` task — intentionally abandoned (#450).
-	Cancelled bool     `json:"cancelled,omitempty"`
-	Due       string   `json:"due,omitempty"`
-	Priority  string   `json:"priority,omitempty"`
-	Waiting   bool     `json:"waiting"`
-	Tags      []string `json:"tags"`
+	Cancelled bool `json:"cancelled,omitempty"`
+	// InProgress is true for a `[/]` task: started, not finished (#512).
+	// Unlike Checked/Cancelled it is still open work, so it keeps its place
+	// in the active buckets on every surface.
+	InProgress bool     `json:"inProgress,omitempty"`
+	Due        string   `json:"due,omitempty"`
+	Priority   string   `json:"priority,omitempty"`
+	Waiting    bool     `json:"waiting"`
+	Tags       []string `json:"tags"`
 	// Kind is how the task is stored: "file" for a whole-note task
 	// (TaskNotes-style, tagged `task` with metadata in frontmatter) or
 	// empty/"inline" for a classic `- [ ]` checkbox line. The renderer

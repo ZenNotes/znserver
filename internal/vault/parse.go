@@ -250,7 +250,7 @@ func localAssetTargetKind(target string) string {
 // --- Task parsing (mirrors shared/tasks.ts parseTasksFromBody) ---
 
 var (
-	taskLineRe      = regexp.MustCompile(`^(\s*(?:[-*+]|\d+\.)\s+)\[( |x|X|>|-)\](.*)$`)
+	taskLineRe      = regexp.MustCompile(`^(\s*(?:[-*+]|\d+\.)\s+)\[( |x|X|>|-|/)\](.*)$`)
 	inlineDueRe     = regexp.MustCompile(`(?i)(?:^|\s)due:\s*(\S+)`)
 	inlinePriority  = regexp.MustCompile(`(?i)(?:^|\s)!(high|med|medium|low|h|m|l)\b`)
 	inlineWaitingRe = regexp.MustCompile(`(?i)(?:^|\s)@waiting\b`)
@@ -345,6 +345,14 @@ var doneStatuses = map[string]bool{
 // cancelledStatuses are frontmatter `status:` values treated as cancelled (#450).
 var cancelledStatuses = map[string]bool{
 	"cancelled": true, "canceled": true,
+}
+
+// inProgressStatuses are frontmatter `status:` values treated as in progress
+// (#512). `in-progress` is TaskNotes' spelling; the rest are what people type
+// by hand. These stay open work, unlike done/cancelled.
+var inProgressStatuses = map[string]bool{
+	"in-progress": true, "in progress": true, "inprogress": true,
+	"doing": true, "started": true, "wip": true,
 }
 
 var (
@@ -467,6 +475,7 @@ func parseTaskFile(path, title string, folder NoteFolder, body string) (Task, bo
 		Content:       content,
 		Checked:       doneStatuses[status],
 		Cancelled:     cancelledStatuses[status],
+		InProgress:    inProgressStatuses[status],
 		Due:           normalizeDueDate(firstScalar(fm["due"])),
 		Priority:      normalizePriority(firstScalar(fm["priority"])),
 		Waiting:       status == "waiting",
@@ -518,6 +527,7 @@ func ParseTasks(path, title string, folder NoteFolder, body string) []Task {
 		tail := strings.TrimPrefix(m[3], "]")
 		checked := checkedChar == "x" || checkedChar == "X"
 		cancelled := checkedChar == "-"
+		inProgress := checkedChar == "/"
 
 		due := ""
 		priority := ""
@@ -578,6 +588,7 @@ func ParseTasks(path, title string, folder NoteFolder, body string) []Task {
 			Content:    content,
 			Checked:    checked,
 			Cancelled:  cancelled,
+			InProgress: inProgress,
 			Due:        due,
 			Priority:   priority,
 			Waiting:    waiting,

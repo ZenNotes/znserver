@@ -146,3 +146,49 @@ func TestParseTaskFileCancelledStatus(t *testing.T) {
 		t.Errorf("Cancelled=%v Checked=%v, want Cancelled=true Checked=false", task.Cancelled, task.Checked)
 	}
 }
+
+// #512: `[/]` in-progress tasks parse as open work, flagged InProgress. The
+// server mirrors shared-domain here, so a web client sees the same states the
+// desktop app does.
+func TestParseTasksRecognizesInProgress(t *testing.T) {
+	body := "- [ ] open\n- [/] started\n- [x] done\n- [-] scrapped\n1. [/] numbered\n"
+	tasks := ParseTasks("inbox/t.md", "t", FolderInbox, body)
+	if len(tasks) != 5 {
+		t.Fatalf("expected 5 tasks (none dropped), got %d", len(tasks))
+	}
+	byContent := map[string]Task{}
+	for _, tk := range tasks {
+		byContent[tk.Content] = tk
+	}
+	for _, name := range []string{"started", "numbered"} {
+		tk, ok := byContent[name]
+		if !ok {
+			t.Fatalf("in-progress task %q was dropped", name)
+		}
+		if !tk.InProgress {
+			t.Errorf("%s: InProgress=false, want true", name)
+		}
+		if tk.Checked || tk.Cancelled {
+			t.Errorf("%s: Checked=%v Cancelled=%v, want both false", name, tk.Checked, tk.Cancelled)
+		}
+	}
+	if byContent["open"].InProgress || byContent["done"].InProgress || byContent["scrapped"].InProgress {
+		t.Error("open/done/cancelled tasks should not be in progress")
+	}
+}
+
+func TestParseTaskFileInProgressStatus(t *testing.T) {
+	for _, status := range []string{"in-progress", "doing", "started", "wip"} {
+		body := "---\ntags: [task]\ntitle: Rewrite\nstatus: " + status + "\n---\n\nHalf done.\n"
+		task, ok := parseTaskFile("inbox/x.md", "x", FolderInbox, body)
+		if !ok {
+			t.Fatalf("%s: expected a file task", status)
+		}
+		if !task.InProgress {
+			t.Errorf("%s: InProgress=false, want true", status)
+		}
+		if task.Checked || task.Cancelled {
+			t.Errorf("%s: Checked=%v Cancelled=%v, want both false", status, task.Checked, task.Cancelled)
+		}
+	}
+}
