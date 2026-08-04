@@ -1119,3 +1119,45 @@ func TestRenameAndMovePreserveExcalidrawExt(t *testing.T) {
 		t.Errorf("move dropped the extension: %q", moved.Path)
 	}
 }
+
+// CreateNote seeds the same `# Title` body the desktop app writes (main
+// vault.ts and the MCP vault-ops both do). A remote vault otherwise creates
+// blank notes where a local one has its title, which is most visible on daily
+// notes, whose date heading is the whole point.
+func TestCreateNoteSeedsTheTitleHeadingLikeTheDesktopApp(t *testing.T) {
+	v, err := New(t.TempDir(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	meta, err := v.CreateNote(FolderInbox, "2026-08-04", "Daily Notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(v.Root(), filepath.FromSlash(meta.Path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "# 2026-08-04\n\n" {
+		t.Fatalf("seeded body = %q, want %q", string(body), "# 2026-08-04\n\n")
+	}
+
+	// A deduped file heads itself by its final on-disk stem, like the desktop.
+	if _, err := v.CreateNote(FolderInbox, "Note", ""); err != nil {
+		t.Fatal(err)
+	}
+	second, err := v.CreateNote(FolderInbox, "Note", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Path != "inbox/Note 2.md" {
+		t.Fatalf("deduped path = %q, want inbox/Note 2.md", second.Path)
+	}
+	body, err = os.ReadFile(filepath.Join(v.Root(), filepath.FromSlash(second.Path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "# Note 2\n\n" {
+		t.Fatalf("deduped body = %q, want %q", string(body), "# Note 2\n\n")
+	}
+}

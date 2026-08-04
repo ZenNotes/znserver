@@ -1742,7 +1742,13 @@ func (v *Vault) CreateNote(folder NoteFolder, title, subpath string) (NoteMeta, 
 		return NoteMeta{}, err
 	}
 	abs := uniquePath(dir, title, ".md")
-	if err := os.WriteFile(abs, []byte(""), v.fileMode); err != nil {
+	// Seed the same `# Title` body the desktop app writes (main vault.ts and
+	// the MCP vault-ops both do), from the FINAL on-disk stem so a deduped
+	// "Title 2" heads itself correctly. A remote vault otherwise creates
+	// blank notes where a local one has its title, which is most visible on
+	// daily notes, whose date heading is the whole point.
+	stem := strings.TrimSuffix(filepath.Base(abs), ".md")
+	if err := os.WriteFile(abs, fmt.Appendf(nil, "# %s\n\n", stem), v.fileMode); err != nil {
 		return NoteMeta{}, err
 	}
 	v.invalidateTextSearchCache()
