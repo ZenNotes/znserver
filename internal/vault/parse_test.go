@@ -192,3 +192,65 @@ func TestParseTaskFileInProgressStatus(t *testing.T) {
 		}
 	}
 }
+
+// #458: the frontmatter `tasks:` key turns a note's checkboxes back into plain
+// checkboxes. The server mirrors noteTasksMode in shared-domain; the accepted
+// values must stay byte-identical across runtimes.
+func TestParseTasksFrontmatterTasksOptOut(t *testing.T) {
+	checklist := "- [ ] Dune\n- [x] Hyperion\n- [ ] Blindsight due:2026-09-01\n"
+	for _, val := range []string{"false", "off", "False", "OFF", "\"false\""} {
+		body := "---\ntasks: " + val + "\n---\n" + checklist
+		if tasks := ParseTasks("inbox/t.md", "t", FolderInbox, body); len(tasks) != 0 {
+			t.Errorf("tasks: %s: expected no tasks, got %d", val, len(tasks))
+		}
+	}
+	// Unrecognized values fall back to the pre-#458 behavior.
+	for _, val := range []string{"true", "yes", "everything"} {
+		body := "---\ntasks: " + val + "\n---\n" + checklist
+		if tasks := ParseTasks("inbox/t.md", "t", FolderInbox, body); len(tasks) != 3 {
+			t.Errorf("tasks: %s: expected 3 tasks, got %d", val, len(tasks))
+		}
+	}
+}
+
+func TestParseTasksFrontmatterTasksFalseWinsOverTaskTag(t *testing.T) {
+	body := "---\ntags: [task]\ntasks: false\n---\n\n- [ ] hidden\n"
+	if tasks := ParseTasks("inbox/t.md", "t", FolderInbox, body); len(tasks) != 0 {
+		t.Fatalf("expected tasks: false to suppress the file task too, got %d tasks", len(tasks))
+	}
+}
+
+func TestParseTasksFrontmatterTasksNoteKeepsFileTaskOnly(t *testing.T) {
+	body := "---\ntags: [task]\ntasks: note\nstatus: in-progress\ndue: 2026-09-01\n---\n\n- [ ] research\n- [x] outline\n"
+	tasks := ParseTasks("inbox/t.md", "t", FolderInbox, body)
+	if len(tasks) != 1 {
+		t.Fatalf("expected exactly the file task, got %d tasks", len(tasks))
+	}
+	tk := tasks[0]
+	if tk.Kind != "file" || tk.ID != "inbox/t.md#task" {
+		t.Errorf("Kind=%q ID=%q, want file task", tk.Kind, tk.ID)
+	}
+	if !tk.InProgress || tk.Due != "2026-09-01" {
+		t.Errorf("InProgress=%v Due=%q, want frontmatter metadata intact", tk.InProgress, tk.Due)
+	}
+	// On a note without the task tag, `tasks: note` simply silences checkboxes.
+	plain := "---\ntasks: note\n---\n\n- [ ] a\n- [ ] b\n"
+	if tasks := ParseTasks("inbox/p.md", "p", FolderInbox, plain); len(tasks) != 0 {
+		t.Errorf("expected no tasks for tasks: note without a task tag, got %d", len(tasks))
+	}
+}
+
+func TestParseTasksWithIncludeExcluded(t *testing.T) {
+	body := "---\ntags: [task]\ntasks: false\n---\n\n- [ ] hidden\n- [ ] also hidden\n"
+	tasks := ParseTasksWith("inbox/t.md", "t", FolderInbox, body, ParseTasksOptions{IncludeExcluded: true})
+	if len(tasks) != 3 {
+		t.Fatalf("expected file task + 2 inline with IncludeExcluded, got %d", len(tasks))
+	}
+	if tasks[0].ID != "inbox/t.md#task" {
+		t.Errorf("first task ID=%q, want the file task", tasks[0].ID)
+	}
+	// Index counting is untouched by the gate, so ids stay stable.
+	if tasks[1].ID != "inbox/t.md#0" || tasks[2].ID != "inbox/t.md#1" {
+		t.Errorf("inline ids %q, %q, want #0 and #1", tasks[1].ID, tasks[2].ID)
+	}
+}

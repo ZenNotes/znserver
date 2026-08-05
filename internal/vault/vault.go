@@ -334,6 +334,14 @@ func cloneSettings(settings VaultSettings) VaultSettings {
 			systemFolderPaths[key] = value
 		}
 	}
+	// Nil stays nil here too (#458); the walker treats an absent Tasks object
+	// as "nothing excluded".
+	var tasks *TasksSettings
+	if settings.Tasks != nil {
+		excluded := make([]string, len(settings.Tasks.ExcludedFolders))
+		copy(excluded, settings.Tasks.ExcludedFolders)
+		tasks = &TasksSettings{ExcludedFolders: excluded}
+	}
 	dailyLegacyPatterns := make([]DateNotePatternSettings, len(settings.DailyNotes.LegacyPatterns))
 	copy(dailyLegacyPatterns, settings.DailyNotes.LegacyPatterns)
 	weeklyLegacyPatterns := make([]DateNotePatternSettings, len(settings.WeeklyNotes.LegacyPatterns))
@@ -375,6 +383,7 @@ func cloneSettings(settings VaultSettings) VaultSettings {
 		FolderColors:      folderColors,
 		Favorites:         favorites,
 		SystemFolderPaths: systemFolderPaths,
+		Tasks:             tasks,
 	}
 }
 
@@ -575,6 +584,7 @@ func normalizeVaultSettings(value VaultSettings, fallbackPrimary PrimaryNotesLoc
 		FolderColors:      folderColors,
 		Favorites:         normalizeFavorites(value.Favorites),
 		SystemFolderPaths: normalizeSystemFolderPaths(value.SystemFolderPaths),
+		Tasks:             normalizeTasksSettings(value.Tasks),
 	}
 }
 
@@ -2174,11 +2184,22 @@ func (v *Vault) DuplicateFolder(folder NoteFolder, subpath string) (string, erro
 // --- Tasks ---
 
 func (v *Vault) ScanTasks() ([]Task, error) {
+	return v.ScanTasksWith(ParseTasksOptions{})
+}
+
+// ScanTasksWith is ScanTasks honoring options: IncludeExcluded scans past
+// both the vault-level excluded-folders list and the note-level frontmatter
+// `tasks:` opt-out (#458).
+func (v *Vault) ScanTasksWith(opts ParseTasksOptions) ([]Task, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	settings, err := v.GetSettings()
 	if err != nil {
 		return nil, err
+	}
+	excluded := tasksExcludedFolders(settings)
+	if opts.IncludeExcluded {
+		excluded = nil
 	}
 	hiddenRootNames := hiddenPrimaryRootNames(settings)
 	all := []Task{}
@@ -2227,8 +2248,11 @@ func (v *Vault) ScanTasks() ([]Task, error) {
 			}
 			rel, _ := filepath.Rel(v.root, path)
 			relPosix := filepath.ToSlash(rel)
+			if isPathExcludedFromTasks(relPosix, excluded) {
+				return nil
+			}
 			title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-			tasks := ParseTasks(relPosix, title, folder, string(body))
+			tasks := ParseTasksWith(relPosix, title, folder, string(body), opts)
 			all = append(all, tasks...)
 			return nil
 		})
@@ -2237,6 +2261,14 @@ func (v *Vault) ScanTasks() ([]Task, error) {
 }
 
 func (v *Vault) ScanTasksForPath(rel string) ([]Task, error) {
+	return v.ScanTasksForPathWith(rel, ParseTasksOptions{})
+}
+
+// ScanTasksForPathWith is ScanTasksForPath honoring options. IncludeExcluded
+// scans past the excluded-folders list and the frontmatter `tasks:` opt-out
+// (never the trash gate): the remote task-toggle flow re-parses through here,
+// and an explicitly-named task id is an explicit ask.
+func (v *Vault) ScanTasksForPathWith(rel string, opts ParseTasksOptions) ([]Task, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	abs, err := SafeJoin(v.root, rel)
@@ -2247,9 +2279,27 @@ func (v *Vault) ScanTasksForPath(rel string) ([]Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	folder, _ := v.folderOf(abs)
+	// Same gates as the full scan, or a single-note rescan would resurrect
+	// tasks the walker skips: trashed and unclassifiable notes contribute
+	// nothing (mirrors the desktop's LIVE_FOLDERS check), and neither do notes
+	// under an excluded folder (#458). The caller uses the empty result to
+	// drop stale rows.
+	folder, ok := v.folderOf(abs)
+	if !ok || folder == FolderTrash {
+		return []Task{}, nil
+	}
+	relPosix := filepath.ToSlash(rel)
+	if !opts.IncludeExcluded {
+		settings, err := v.GetSettings()
+		if err != nil {
+			return nil, err
+		}
+		if isPathExcludedFromTasks(relPosix, tasksExcludedFolders(settings)) {
+			return []Task{}, nil
+		}
+	}
 	title := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
-	return ParseTasks(filepath.ToSlash(rel), title, folder, string(body)), nil
+	return ParseTasksWith(relPosix, title, folder, string(body), opts), nil
 }
 
 // --- Text search ---

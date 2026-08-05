@@ -912,8 +912,10 @@ func (s *Server) duplicateFolder(w http.ResponseWriter, r *http.Request) {
 
 // --- Tasks + Search ---
 
-func (s *Server) allTasks(w http.ResponseWriter, _ *http.Request) {
-	tasks, err := s.currentVault().ScanTasks()
+func (s *Server) allTasks(w http.ResponseWriter, r *http.Request) {
+	tasks, err := s.currentVault().ScanTasksWith(vault.ParseTasksOptions{
+		IncludeExcluded: taskQueryIncludesExcluded(r),
+	})
 	if err != nil {
 		writeError(w, err)
 		return
@@ -923,12 +925,25 @@ func (s *Server) allTasks(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) tasksFor(w http.ResponseWriter, r *http.Request) {
 	rel := r.URL.Query().Get("path")
-	tasks, err := s.currentVault().ScanTasksForPath(rel)
+	tasks, err := s.currentVault().ScanTasksForPathWith(rel, vault.ParseTasksOptions{
+		IncludeExcluded: taskQueryIncludesExcluded(r),
+	})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, tasks)
+}
+
+// taskQueryIncludesExcluded reads the ?includeExcluded= escape hatch (#458):
+// scan past the vault's excluded-folders list and the note-level `tasks:`
+// opt-out. Accepts the same truthy spellings the config loader does.
+func taskQueryIncludesExcluded(r *http.Request) bool {
+	switch strings.ToLower(r.URL.Query().Get("includeExcluded")) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 func (s *Server) searchCapabilities(w http.ResponseWriter, _ *http.Request) {
