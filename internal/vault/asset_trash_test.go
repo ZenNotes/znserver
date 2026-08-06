@@ -106,6 +106,40 @@ func TestRestoreDeletedAssetRejectsBadInput(t *testing.T) {
 	}
 }
 
+func TestRestoreDeletedAssetFollowsStoredMetadataNotTheRequest(t *testing.T) {
+	root := t.TempDir()
+	v, err := New(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAsset(t, root, "assets/pic.png", "PNG")
+	deleted, err := v.DeleteAsset("assets/pic.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A hostile request keeps a valid token but names the metadata file as the
+	// thing to restore. Trusting it would rename .zn-deleted.json into the
+	// vault and then purge the real asset bytes with the trash dir cleanup.
+	hostile := deleted
+	hostile.Name = deletedAssetMetaFile
+	hostile.Path = "assets/x.json"
+	meta, err := v.RestoreDeletedAsset(hostile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Path != "assets/pic.png" {
+		t.Fatalf("restored path = %q, want the stored assets/pic.png", meta.Path)
+	}
+	body, err := os.ReadFile(filepath.Join(root, "assets", "pic.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "PNG" {
+		t.Fatalf("restored body = %q, want the original asset bytes", body)
+	}
+}
+
 func TestPurgeAndEmptyDeletedAssets(t *testing.T) {
 	root := t.TempDir()
 	v, err := New(root, Options{})

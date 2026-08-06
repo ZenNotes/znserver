@@ -105,9 +105,6 @@ func (v *Vault) DeleteAsset(rel string) (DeletedAsset, error) {
 	}
 	name := filepath.Base(srcAbs)
 	deletedAt := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-	if err := os.Rename(srcAbs, filepath.Join(trashDir, name)); err != nil {
-		return DeletedAsset{}, err
-	}
 	deleted := DeletedAsset{
 		Path:      filepath.ToSlash(srcRel),
 		Name:      name,
@@ -122,7 +119,17 @@ func (v *Vault) DeleteAsset(rel string) (DeletedAsset, error) {
 	if err != nil {
 		return DeletedAsset{}, err
 	}
+	// Metadata first, file move last: a failure anywhere leaves the asset
+	// still in the vault. The old order (rename, then metadata) could hit a
+	// write error (disk full, permissions) after the move and strand the
+	// asset in a token dir the Trash view skips, gone from the vault with no
+	// in-app way back.
 	if err := os.WriteFile(filepath.Join(trashDir, deletedAssetMetaFile), meta, v.fileMode); err != nil {
+		_ = os.RemoveAll(trashDir)
+		return DeletedAsset{}, err
+	}
+	if err := os.Rename(srcAbs, filepath.Join(trashDir, name)); err != nil {
+		_ = os.RemoveAll(trashDir)
 		return DeletedAsset{}, err
 	}
 	return deleted, nil
@@ -175,22 +182,40 @@ func (v *Vault) ListDeletedAssets() ([]DeletedAsset, error) {
 
 // RestoreDeletedAsset moves an asset back to its original folder, deduping
 // the filename if something new took its place, mirroring the desktop.
+// Only the token comes from the caller; the stored .zn-deleted.json decides
+// what gets restored and where. Trusting a client-supplied name here once
+// let a request naming the metadata file itself "restore" that file and
+// then destroy the real asset bytes with the trash dir cleanup.
 func (v *Vault) RestoreDeletedAsset(deleted DeletedAsset) (AssetMeta, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	targetRel, err := cleanDeletedAssetPath(deleted.Path)
-	if err != nil {
-		return AssetMeta{}, err
-	}
-	name, err := cleanAssetFilename(deleted.Name)
-	if err != nil {
-		return AssetMeta{}, err
-	}
 	undoToken, err := cleanDeletedAssetToken(deleted.UndoToken)
 	if err != nil {
 		return AssetMeta{}, err
 	}
 	trashDir := filepath.Join(v.deletedAssetsRoot(), undoToken)
+	raw, err := os.ReadFile(filepath.Join(trashDir, deletedAssetMetaFile))
+	if err != nil {
+		return AssetMeta{}, errors.New("deleted asset entry not found")
+	}
+	var stored struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return AssetMeta{}, errors.New("deleted asset entry is unreadable")
+	}
+	targetRel, err := cleanDeletedAssetPath(stored.Path)
+	if err != nil {
+		return AssetMeta{}, err
+	}
+	name, err := cleanAssetFilename(stored.Name)
+	if err != nil {
+		return AssetMeta{}, err
+	}
+	if name == deletedAssetMetaFile {
+		return AssetMeta{}, errors.New("deleted asset entry is unreadable")
+	}
 	srcAbs := filepath.Join(trashDir, name)
 	targetAbs, err := SafeJoin(v.root, targetRel)
 	if err != nil {
