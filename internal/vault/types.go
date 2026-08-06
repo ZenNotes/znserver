@@ -347,6 +347,17 @@ type AssetMeta struct {
 	UpdatedAt    int64  `json:"updatedAt"`
 }
 
+// DeletedAsset — mirrors shared/ipc.ts DeletedAsset. The meta file it is
+// read from (.zn-deleted.json) is shared with the desktop app: a vault can be
+// served remotely today and opened locally tomorrow, so the field set must
+// stay byte-compatible with desktop vault.ts.
+type DeletedAsset struct {
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	UndoToken string `json:"undoToken"`
+	DeletedAt string `json:"deletedAt,omitempty"`
+}
+
 // ImportedAsset — mirrors shared/ipc.ts ImportedAsset.
 type ImportedAsset struct {
 	Name     string `json:"name"`

@@ -193,6 +193,12 @@ func (s *Server) registerProtectedRoutes(r chi.Router) {
 	r.Post("/assets/upload", s.uploadAsset)
 	r.Post("/assets/rename", s.renameAsset)
 	r.Post("/assets/move", s.moveAsset)
+	r.Post("/assets/duplicate", s.duplicateAsset)
+	r.Post("/assets/delete", s.deleteAsset)
+	r.Get("/assets/deleted", s.listDeletedAssets)
+	r.Post("/assets/restore", s.restoreDeletedAsset)
+	r.Post("/assets/purge", s.purgeDeletedAsset)
+	r.Post("/assets/empty-deleted", s.emptyDeletedAssets)
 
 	r.Get("/notes/read", s.readNote)
 	r.Get("/comments/read", s.readComments)
@@ -384,6 +390,11 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 		// (inotify-restricted hosts, ZENNOTES_DISABLE_WATCHER, #179), and a
 		// client that believes a dead feed never refreshes on its own.
 		"supportsWatch": s.currentWatcher().Active(),
+		// The full asset mutation family incl. the deleted-assets store
+		// (delete/duplicate/restore/purge). Desktop remote workspaces gate
+		// on this to give older servers a "server needs an update" message
+		// instead of a bare 404.
+		"supportsAssetOps": true,
 		// Says out loud that a missing file answers 404 rather than 500.
 		// Databases are composed from file reads where "absent" and "failed"
 		// mean opposite things (see remote-absence.ts), and a server that
@@ -1057,6 +1068,84 @@ func (s *Server) moveAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *Server) duplicateAsset(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	meta, err := s.currentVault().DuplicateAsset(req.Path)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *Server) deleteAsset(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	deleted, err := s.currentVault().DeleteAsset(req.Path)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, deleted)
+}
+
+func (s *Server) listDeletedAssets(w http.ResponseWriter, _ *http.Request) {
+	deleted, err := s.currentVault().ListDeletedAssets()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, deleted)
+}
+
+func (s *Server) restoreDeletedAsset(w http.ResponseWriter, r *http.Request) {
+	var req vault.DeletedAsset
+	if err := readJSON(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	meta, err := s.currentVault().RestoreDeletedAsset(req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *Server) purgeDeletedAsset(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UndoToken string `json:"undoToken"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.currentVault().PurgeDeletedAsset(req.UndoToken); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) emptyDeletedAssets(w http.ResponseWriter, _ *http.Request) {
+	if err := s.currentVault().EmptyDeletedAssets(); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- WebSocket watcher ---

@@ -77,11 +77,13 @@ func TestImportAssetEnforcesMaxBytes(t *testing.T) {
 	if !errors.Is(err, ErrAssetTooLarge) {
 		t.Fatalf("expected ErrAssetTooLarge, got %v", err)
 	}
-	// Partial file should be removed.
-	entries, _ := os.ReadDir(v.Root())
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".bin") {
-			t.Fatalf("partial asset %q should be cleaned up", e.Name())
+	// Partial file should be removed from the assets/ destination.
+	for _, dir := range []string{v.Root(), filepath.Join(v.Root(), AssetsDir)} {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".bin") {
+				t.Fatalf("partial asset %q should be cleaned up", e.Name())
+			}
 		}
 	}
 }
@@ -97,13 +99,22 @@ func TestImportAssetWithinLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
-	abs := filepath.Join(v.Root(), asset.Name)
+	// Uploads land in the unified assets/ folder, matching the desktop (#377).
+	if asset.Path != AssetsDir+"/"+asset.Name {
+		t.Fatalf("asset path = %q, want it under %s/", asset.Path, AssetsDir)
+	}
+	abs := filepath.Join(v.Root(), filepath.FromSlash(asset.Path))
 	got, err := os.ReadFile(abs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got, body) {
 		t.Fatalf("written bytes differ from input")
+	}
+	// The embed markdown is relative to the note's directory: a root-level
+	// note links straight into assets/.
+	if asset.Markdown == "" || !strings.Contains(asset.Markdown, "assets/x.bin") {
+		t.Fatalf("markdown = %q, want a link into assets/", asset.Markdown)
 	}
 }
 

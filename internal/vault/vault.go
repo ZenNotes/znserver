@@ -2479,12 +2479,16 @@ func (v *Vault) SearchText(query string) ([]TextSearchMatch, error) {
 
 // --- Assets upload + raw serving ---
 
-// ImportAsset writes raw bytes into the vault root and returns the
-// markdown snippet to embed relative to the source note.
+// ImportAsset writes raw bytes into the unified assets/ folder and returns
+// the markdown snippet to embed relative to the source note. The destination
+// mirrors the desktop importFiles/importPastedImage (#377): uploads used to
+// land at the vault root, which in Vault Root mode dumped them right next to
+// the notes.
 func (v *Vault) ImportAsset(notePath, filename string, body io.Reader) (ImportedAsset, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if err := os.MkdirAll(v.root, v.dirMode); err != nil {
+	assetsAbs := filepath.Join(v.root, AssetsDir)
+	if err := os.MkdirAll(assetsAbs, v.dirMode); err != nil {
 		return ImportedAsset{}, err
 	}
 	safeName := sanitizeFileName(filename)
@@ -2493,7 +2497,7 @@ func (v *Vault) ImportAsset(notePath, filename string, body io.Reader) (Imported
 	}
 	ext := filepath.Ext(safeName)
 	stem := strings.TrimSuffix(safeName, ext)
-	abs := uniquePath(v.root, stem, ext)
+	abs := uniquePath(assetsAbs, stem, ext)
 	f, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, v.fileMode)
 	if err != nil {
 		return ImportedAsset{}, err
@@ -2516,7 +2520,11 @@ func (v *Vault) ImportAsset(notePath, filename string, body io.Reader) (Imported
 		_ = os.Remove(abs)
 		return ImportedAsset{}, err
 	}
-	rel := filepath.ToSlash(filepath.Base(abs))
+	relFromRoot, err := filepath.Rel(v.root, abs)
+	if err != nil {
+		return ImportedAsset{}, err
+	}
+	rel := filepath.ToSlash(relFromRoot)
 	noteDir := filepath.Dir(filepath.FromSlash(notePath))
 	if noteDir == "." {
 		noteDir = ""
