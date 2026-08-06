@@ -156,6 +156,15 @@ func StartOrDisabled(root string, disable bool) *Watcher {
 	return w
 }
 
+// Active reports whether this watcher really watches the filesystem. The
+// Disabled fallback (inotify unavailable or explicitly off, #179) has no
+// fsnotify handle and never emits an event; capabilities must not promise
+// live updates it cannot deliver, or clients skip polling AND never hear
+// about changes.
+func (w *Watcher) Active() bool {
+	return w != nil && w.fs != nil
+}
+
 func (w *Watcher) Subscribe() (<-chan vault.ChangeEvent, func()) {
 	ch := make(chan vault.ChangeEvent, 64)
 	w.mu.Lock()

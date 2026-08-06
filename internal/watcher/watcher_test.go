@@ -204,3 +204,27 @@ func TestWatcherDoesNotSurfaceInternalDirAsFolder(t *testing.T) {
 		// Expected: .zennotes is not a user-facing folder.
 	}
 }
+
+func TestActiveDistinguishesRealFromDisabledWatcher(t *testing.T) {
+	root := t.TempDir()
+
+	disabled := Disabled(root)
+	defer disabled.Close()
+	if disabled.Active() {
+		t.Fatal("Disabled watcher reports Active; capabilities would promise live updates it cannot deliver")
+	}
+
+	real, err := Start(root)
+	if err != nil {
+		t.Skipf("fsnotify unavailable here: %v", err)
+	}
+	defer real.Close()
+	if !real.Active() {
+		t.Fatal("real watcher reports inactive")
+	}
+
+	var nilWatcher *Watcher
+	if nilWatcher.Active() {
+		t.Fatal("nil watcher reports Active")
+	}
+}

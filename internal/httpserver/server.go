@@ -1,7 +1,6 @@
 package httpserver
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -381,7 +380,10 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 		"browseRootsEnforced":       !cfg.AllowUnscopedBrowse,
 		"supportsVaultSelection":    true,
 		"supportsDirectoryBrowsing": true,
-		"supportsWatch":             true,
+		// Honest, not aspirational: the watcher can be a no-op fallback
+		// (inotify-restricted hosts, ZENNOTES_DISABLE_WATCHER, #179), and a
+		// client that believes a dead feed never refreshes on its own.
+		"supportsWatch": s.currentWatcher().Active(),
 		// Says out loud that a missing file answers 404 rather than 500.
 		// Databases are composed from file reads where "absent" and "failed"
 		// mean opposite things (see remote-absence.ts), and a server that
@@ -1059,6 +1061,11 @@ func (s *Server) moveAsset(w http.ResponseWriter, r *http.Request) {
 
 // --- WebSocket watcher ---
 
+// watchPingInterval is how often watchWS pings a subscriber to detect a dead
+// peer. A var, not a const, so the regression test can shrink it and prove
+// events survive ping cycles without waiting out real 25-second ticks.
+var watchPingInterval = 25 * time.Second
+
 func (s *Server) watchWS(w http.ResponseWriter, r *http.Request) {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin != "" && !s.isAllowedOrigin(r, origin) {
@@ -1077,13 +1084,18 @@ func (s *Server) watchWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.Close(websocket.StatusNormalClosure, "")
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	// This connection is write-only, but the library only processes incoming
+	// control frames during a read. Without CloseRead the client's pong is
+	// never seen, so the first keepalive Ping below blocked forever and the
+	// subscriber went silent 25 seconds after connecting — the "changes don't
+	// appear until I refresh" report in the flesh. CloseRead spawns the reader
+	// that keeps pings honest and cancels the context when the peer goes away.
+	ctx := ws.CloseRead(r.Context())
 
 	events, unsubscribe := s.currentWatcher().Subscribe()
 	defer unsubscribe()
 
-	pingTicker := time.NewTicker(25 * time.Second)
+	pingTicker := time.NewTicker(watchPingInterval)
 	defer pingTicker.Stop()
 
 	for {
