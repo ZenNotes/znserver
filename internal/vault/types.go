@@ -287,6 +287,10 @@ type VaultSettings struct {
 	// persisted as a first-class field so a web client's settings write never
 	// drops a desktop-written exclusion list (the #446/#379 round-trip rule).
 	Tasks *TasksSettings `json:"tasks,omitempty"`
+	// Typst preamble settings (#486, #562). Mirrors shared/ipc.ts
+	// VaultSettings.typstPreambles; a first-class field for the same round-trip
+	// reason as Tasks above.
+	TypstPreambles *TypstPreambleSettings `json:"typstPreambles,omitempty"`
 }
 
 // TasksSettings mirrors shared/ipc.ts VaultSettings.tasks (#458).
@@ -294,6 +298,14 @@ type TasksSettings struct {
 	// ExcludedFolders lists vault-relative directory paths (as they exist on
 	// disk) whose notes never feed the Tasks surfaces.
 	ExcludedFolders []string `json:"excludedFolders,omitempty"`
+}
+
+// TypstPreambleSettings mirrors shared/ipc.ts VaultSettings.typstPreambles
+// (#562).
+type TypstPreambleSettings struct {
+	// Folder names the directory whose notes are Typst preambles, matched at
+	// any depth. Empty means the default, `typst`.
+	Folder string `json:"folder,omitempty"`
 }
 
 // NoteMeta — vault-relative note metadata. Mirrors shared/ipc.ts NoteMeta.

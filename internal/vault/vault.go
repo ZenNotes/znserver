@@ -585,6 +585,7 @@ func normalizeVaultSettings(value VaultSettings, fallbackPrimary PrimaryNotesLoc
 		Favorites:         normalizeFavorites(value.Favorites),
 		SystemFolderPaths: normalizeSystemFolderPaths(value.SystemFolderPaths),
 		Tasks:             normalizeTasksSettings(value.Tasks),
+		TypstPreambles:    normalizeTypstPreambleSettings(value.TypstPreambles),
 	}
 }
 
@@ -872,6 +873,10 @@ func (v *Vault) invalidateSettingsCache() {
 func (v *Vault) SetSettings(next VaultSettings) (VaultSettings, error) {
 	fallbackPrimary := v.inferPrimaryNotesLocation()
 	normalized := normalizeVaultSettings(next, fallbackPrimary)
+	// Read before the write, while the cache still answers with the old value:
+	// a note's tags depend on the preamble folder (#562), so cached metas
+	// describe the previous setting the moment it moves.
+	previousPreambleFolder := v.typstPreambleFolder()
 	if err := os.MkdirAll(filepath.Dir(v.settingsPath()), v.dirMode); err != nil {
 		return VaultSettings{}, err
 	}
@@ -891,6 +896,9 @@ func (v *Vault) SetSettings(next VaultSettings) (VaultSettings, error) {
 		}
 	}
 	v.invalidateTextSearchCache()
+	if resolveTypstPreambleFolder(normalized) != previousPreambleFolder {
+		v.invalidateNoteMetaCache()
+	}
 	return cloneSettings(normalized), nil
 }
 
@@ -1174,6 +1182,10 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 		limit = len(files)
 	}
 	sem := make(chan struct{}, limit)
+	// Resolved once for the whole scan, not once per note: this loop reads a
+	// meta per file across a pool of goroutines, and resolving inside would
+	// open and stat vault.json (and take settingsMu) for every one of them.
+	preambleFolder := v.typstPreambleFolder()
 	var wg sync.WaitGroup
 	for index, file := range files {
 		wg.Add(1)
@@ -1181,7 +1193,7 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			meta, err := v.readMeta(file.folder, file.path)
+			meta, err := v.readMetaWithPreambleFolder(file.folder, file.path, preambleFolder)
 			if err != nil {
 				return // skip unreadable files silently
 			}
@@ -1384,7 +1396,7 @@ func kindForExt(ext string) string {
 // buildNoteMeta assembles NoteMeta for a note-like file. Excalidraw drawings
 // store JSON, not Markdown, so their tags/wikilinks/excerpt are skipped — a hex
 // color like "#1971c2" in the scene must not register as a #tag.
-func buildNoteMeta(relPosix, title string, folder NoteFolder, info os.FileInfo, bodyStr string) NoteMeta {
+func buildNoteMeta(relPosix, title string, folder NoteFolder, info os.FileInfo, bodyStr, preambleFolder string) NoteMeta {
 	meta := NoteMeta{
 		Path:      relPosix,
 		Title:     title,
@@ -1398,14 +1410,30 @@ func buildNoteMeta(relPosix, title string, folder NoteFolder, info os.FileInfo, 
 	if isExcalidrawName(relPosix) {
 		return meta
 	}
-	meta.Tags = ExtractTags(bodyStr)
 	meta.Wikilinks = ExtractWikilinks(bodyStr)
 	meta.HasAttachments = BodyHasLocalAsset(bodyStr)
 	meta.Excerpt = BuildExcerpt(bodyStr)
+	// A Typst preamble holds Typst source, not prose: `#let vec(x) = bold(x)`
+	// and the `#var` references in its formulas are variables, so indexing them
+	// filled the tag list with `let` and every variable name (#562). Tags only:
+	// the note keeps its excerpt, wikilinks and searchability.
+	if isTypstPreamblePath(relPosix, preambleFolder) {
+		return meta
+	}
+	meta.Tags = ExtractTags(bodyStr)
 	return meta
 }
 
 func (v *Vault) readMeta(folder NoteFolder, abs string) (NoteMeta, error) {
+	return v.readMetaWithPreambleFolder(folder, abs, v.typstPreambleFolder())
+}
+
+// readMetaWithPreambleFolder is readMeta with the preamble folder already
+// resolved, for callers reading many notes at once.
+func (v *Vault) readMetaWithPreambleFolder(
+	folder NoteFolder,
+	abs, preambleFolder string,
+) (NoteMeta, error) {
 	info, err := os.Stat(abs)
 	if err != nil {
 		return NoteMeta{}, err
@@ -1437,7 +1465,7 @@ func (v *Vault) readMeta(folder NoteFolder, abs string) (NoteMeta, error) {
 
 	title := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
 
-	meta := buildNoteMeta(relPosix, title, folder, info, bodyStr)
+	meta := buildNoteMeta(relPosix, title, folder, info, bodyStr, preambleFolder)
 	v.metaCacheMu.Lock()
 	v.metaCache[abs] = noteMetaCacheEntry{
 		mtimeMs: statMtimeMs,
@@ -1472,7 +1500,7 @@ func (v *Vault) ReadNote(rel string) (NoteContent, error) {
 	bodyStr := string(body)
 	rel = filepath.ToSlash(rel)
 	title := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
-	meta := buildNoteMeta(rel, title, folder, info, bodyStr)
+	meta := buildNoteMeta(rel, title, folder, info, bodyStr, v.typstPreambleFolder())
 	return NoteContent{NoteMeta: meta, Body: bodyStr}, nil
 }
 
@@ -1713,6 +1741,18 @@ func (v *Vault) copyNoteCommentsLocked(sourceRel, nextRel string) error {
 // folderOf classifies an absolute path by the folder it lives in, honoring the
 // on-disk overrides: without them a note in a remapped trash directory came
 // back tagged `inbox`, and a restore lost the subfolder it was trashed from.
+// typstPreambleFolder resolves the vault's preamble folder (#562) the same way
+// folderOf resolves the system-folder remap: through GetSettings, whose parse
+// is cached against vault.json's identity. Falls back to the default when the
+// settings cannot be read, so a note is never mistaken for a preamble.
+func (v *Vault) typstPreambleFolder() string {
+	settings, err := v.GetSettings()
+	if err != nil {
+		return DefaultTypstPreambleFolder
+	}
+	return resolveTypstPreambleFolder(settings)
+}
+
 func (v *Vault) folderOf(abs string) (NoteFolder, bool) {
 	rel, err := filepath.Rel(v.root, abs)
 	if err != nil {
