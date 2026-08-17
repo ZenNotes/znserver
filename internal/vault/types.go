@@ -416,7 +416,11 @@ type Task struct {
 	// InProgress is true for a `[/]` task: started, not finished (#512).
 	// Unlike Checked/Cancelled it is still open work, so it keeps its place
 	// in the active buckets on every surface.
-	InProgress bool     `json:"inProgress,omitempty"`
+	InProgress bool `json:"inProgress,omitempty"`
+	// Forwarded is true for a `[>]` record: the task moved to another note
+	// and a live copy exists there (#316). Without it, a web client read
+	// carried tasks as open twice, record and copy alike (#611 review).
+	Forwarded bool     `json:"forwarded,omitempty"`
 	Due        string   `json:"due,omitempty"`
 	Priority   string   `json:"priority,omitempty"`
 	Waiting    bool     `json:"waiting"`

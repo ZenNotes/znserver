@@ -581,6 +581,7 @@ func ParseTasksWith(path, title string, folder NoteFolder, body string, opts Par
 		checked := checkedChar == "x" || checkedChar == "X"
 		cancelled := checkedChar == "-"
 		inProgress := checkedChar == "/"
+		forwarded := checkedChar == ">"
 
 		due := ""
 		priority := ""
@@ -642,6 +643,7 @@ func ParseTasksWith(path, title string, folder NoteFolder, body string, opts Par
 			Checked:    checked,
 			Cancelled:  cancelled,
 			InProgress: inProgress,
+			Forwarded:  forwarded,
 			Due:        due,
 			Priority:   priority,
 			Waiting:    waiting,
