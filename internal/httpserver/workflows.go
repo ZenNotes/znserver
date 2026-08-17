@@ -62,8 +62,11 @@ func (s *Server) applyWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := s.currentConfig()
 	for _, change := range input.Changes {
-		if cfg.MaxNoteBytes > 0 && ((change.Before != nil && int64(len(*change.Before)) > cfg.MaxNoteBytes) ||
-			(change.After != nil && int64(len(*change.After)) > cfg.MaxNoteBytes)) {
+		// Only what the run WRITES counts against the limit. Before is the
+		// note's bytes already on disk: counting those made an oversized note
+		// impossible to shrink, move, or trash from the web client, 413 on
+		// every apply, while desktop applied the identical run.
+		if cfg.MaxNoteBytes > 0 && change.After != nil && int64(len(*change.After)) > cfg.MaxNoteBytes {
 			http.Error(w, "workflow note exceeds the configured note size limit", http.StatusRequestEntityTooLarge)
 			return
 		}

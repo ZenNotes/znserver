@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -211,8 +212,20 @@ func (v *Vault) WriteWorkflow(input WriteWorkflowInput) (WorkflowFile, error) {
 		return WorkflowFile{}, err
 	}
 	if previous != "" && previous != abs {
-		if err := os.Remove(previous); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return WorkflowFile{}, err
+		// On a case-insensitive filesystem two differently-cased paths can name
+		// the SAME file, and writeFileAtomic just landed the new content on it;
+		// a spelling compare then let os.Remove delete the workflow that was
+		// just saved. Compare file identity, not path strings.
+		sameFile := false
+		if prevInfo, statErr := os.Stat(previous); statErr == nil {
+			if newInfo, statErr := os.Stat(abs); statErr == nil && os.SameFile(prevInfo, newInfo) {
+				sameFile = true
+			}
+		}
+		if !sameFile {
+			if err := os.Remove(previous); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return WorkflowFile{}, err
+			}
 		}
 	}
 	return WorkflowFile{ID: workflowIDForName(name), SourcePath: sourcePath, Raw: input.Raw}, nil
@@ -276,6 +289,40 @@ func optionalStringsEqual(left, right *string) bool {
 		return left == nil && right == nil
 	}
 	return *left == *right
+}
+
+// coerceUTF8ForWire mirrors what encoding/json does to a string on its way to
+// the client: every invalid UTF-8 byte becomes one U+FFFD replacement. The
+// client can never echo back bytes JSON already destroyed, so before-bytes
+// comparisons must compare against this view of the disk, byte-for-byte
+// identical to what /notes/read served.
+func coerceUTF8ForWire(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			b.WriteRune(utf8.RuneError)
+			i++
+			continue
+		}
+		b.WriteString(s[i : i+size])
+		i += size
+	}
+	return b.String()
+}
+
+func optionalWireEqual(disk, client *string) bool {
+	if optionalStringsEqual(disk, client) {
+		return true
+	}
+	if disk == nil || client == nil {
+		return false
+	}
+	return coerceUTF8ForWire(*disk) == *client
 }
 
 func workflowJournalKey(path string) string {
@@ -346,22 +393,44 @@ func (v *Vault) readWorkflowLedgerLocked(runID string) (workflowRunLedger, error
 }
 
 func (v *Vault) restoreWorkflowJournalLocked(journal []workflowJournalEntry) (int, []error) {
+	return v.restoreWorkflowJournalSnapshotLocked(journal, nil, nil)
+}
+
+// restoreWorkflowJournalSnapshotLocked restores the journal, consulting an
+// optional pre-read snapshot (liveByPath/absByPath) so a caller that already
+// read every file, like undo's drift check, does not read the whole run a
+// second time while holding the exclusive vault lock. Entries missing from
+// the snapshot fall back to resolving and reading here.
+func (v *Vault) restoreWorkflowJournalSnapshotLocked(
+	journal []workflowJournalEntry,
+	liveByPath map[string]*string,
+	absByPath map[string]string,
+) (int, []error) {
 	restored := 0
 	failures := []error{}
 	for _, entry := range journal {
-		abs, err := v.resolveWorkflowNotePath(entry.Path)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("%s: %w", entry.Path, err))
-			continue
+		abs, haveAbs := absByPath[entry.Path]
+		if !haveAbs {
+			resolved, err := v.resolveWorkflowNotePath(entry.Path)
+			if err != nil {
+				failures = append(failures, fmt.Errorf("%s: %w", entry.Path, err))
+				continue
+			}
+			abs = resolved
 		}
-		live, err := readOptionalText(abs)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("%s: %w", entry.Path, err))
-			continue
+		live, haveLive := liveByPath[entry.Path]
+		if !haveLive {
+			read, err := readOptionalText(abs)
+			if err != nil {
+				failures = append(failures, fmt.Errorf("%s: %w", entry.Path, err))
+				continue
+			}
+			live = read
 		}
 		if optionalStringsEqual(live, entry.Before) {
 			continue
 		}
+		var err error
 		if entry.Before == nil {
 			err = os.Remove(abs)
 			if errors.Is(err, os.ErrNotExist) {
@@ -387,6 +456,13 @@ func workflowFailureMessage(failures []error) string {
 	return strings.Join(parts, "; ")
 }
 
+// requiredWorkflowOpFields is the Go mirror of the workflow op schema. Three
+// synced copies exist and MUST change together (the stripCodeContent rule):
+// the op types in packages/shared-domain/src/workflows/types.ts, the
+// parseWorkflowOp validator in packages/shared-domain/src/workflows/
+// prepare-run.ts (duplicated into apps/desktop/src/main/workflow-apply.ts),
+// and this map. Miss this one and every web run carrying the new op kind
+// 400s as "not valid" while desktop applies it fine.
 var requiredWorkflowOpFields = map[string][]string{
 	"set-frontmatter": {"path", "field", "value"},
 	"add-tag":         {"path", "tag"},
@@ -444,7 +520,16 @@ func (v *Vault) ApplyPreparedWorkflow(input PreparedWorkflowRun) (WorkflowRunRec
 	if len(workflowID) > maxWorkflowIDLength {
 		return WorkflowRunReceipt{}, fmt.Errorf("%w: workflow id is too long", ErrInvalidWorkflow)
 	}
-	if len(input.Ops) > maxWorkflowOps || len(input.Changes) > maxWorkflowChanges || input.Applied < 0 || input.Irreversible < 0 || input.Applied > len(input.Ops) || input.Irreversible > len(input.Ops) {
+	// Name the cap when a run is over it: the dry run just promised success,
+	// so a bare "invalid counts" read as a client bug instead of a server
+	// limit the user can see and reason about.
+	if len(input.Ops) > maxWorkflowOps {
+		return WorkflowRunReceipt{}, fmt.Errorf("%w: this run has %d operations, over the server limit of %d; split the workflow or run it from the desktop app", ErrInvalidWorkflow, len(input.Ops), maxWorkflowOps)
+	}
+	if len(input.Changes) > maxWorkflowChanges {
+		return WorkflowRunReceipt{}, fmt.Errorf("%w: this run touches %d files, over the server limit of %d; split the workflow or run it from the desktop app", ErrInvalidWorkflow, len(input.Changes), maxWorkflowChanges)
+	}
+	if input.Applied < 0 || input.Irreversible < 0 || input.Applied > len(input.Ops) || input.Irreversible > len(input.Ops) {
 		return WorkflowRunReceipt{}, fmt.Errorf("%w: invalid workflow run counts", ErrInvalidWorkflow)
 	}
 	irreversible, err := validatePreparedWorkflowOps(input.Ops)
@@ -475,7 +560,11 @@ func (v *Vault) ApplyPreparedWorkflow(input PreparedWorkflowRun) (WorkflowRunRec
 		if err != nil {
 			return WorkflowRunReceipt{}, err
 		}
-		if !optionalStringsEqual(live, change.Before) {
+		// Compare against the client's WIRE view of the file: JSON coerced any
+		// invalid UTF-8 to U+FFFD on the way out, so a note carrying one stray
+		// non-UTF-8 byte would otherwise 409 on every apply, forever, and
+		// re-planning reads the same lossy view so the loop never resolved.
+		if !optionalWireEqual(live, change.Before) {
 			return WorkflowRunReceipt{}, fmt.Errorf("%w: %s changed after the dry run", ErrWorkflowConflict, path)
 		}
 		paths = append(paths, path)
@@ -608,22 +697,31 @@ func (v *Vault) UndoWorkflowRun(runID string) (WorkflowUndoResult, error) {
 	if ledger.Undone {
 		return WorkflowUndoResult{}, fmt.Errorf("%w: workflow run was already undone", ErrInvalidWorkflow)
 	}
+	// One read per journaled file: the drift check and the restore both need
+	// the live bytes, and reading a whole-vault run twice under the exclusive
+	// lock doubled how long every other request stayed blocked. The lock
+	// guarantees nothing changes between this pass and the restore.
+	liveByPath := make(map[string]*string, len(ledger.Journal))
+	absByPath := make(map[string]string, len(ledger.Journal))
 	drifted := []string{}
 	for _, entry := range ledger.Journal {
-		expected, tracked := ledger.Hashes[entry.Path]
-		if !tracked {
-			continue
-		}
 		abs, err := v.resolveWorkflowNotePath(entry.Path)
 		if err != nil {
 			continue
 		}
+		absByPath[entry.Path] = abs
 		live, err := readOptionalText(abs)
-		if err == nil && !optionalStringsEqual(workflowHash(live), expected) {
-			drifted = append(drifted, entry.Path)
+		if err != nil {
+			continue
+		}
+		liveByPath[entry.Path] = live
+		if expected, tracked := ledger.Hashes[entry.Path]; tracked {
+			if !optionalStringsEqual(workflowHash(live), expected) {
+				drifted = append(drifted, entry.Path)
+			}
 		}
 	}
-	restored, failures := v.restoreWorkflowJournalLocked(ledger.Journal)
+	restored, failures := v.restoreWorkflowJournalSnapshotLocked(ledger.Journal, liveByPath, absByPath)
 	if len(failures) > 0 {
 		return WorkflowUndoResult{}, fmt.Errorf("undo of run %s is incomplete: %s", runID, workflowFailureMessage(failures))
 	}
