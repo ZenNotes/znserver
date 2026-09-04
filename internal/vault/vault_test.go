@@ -1249,3 +1249,43 @@ func TestCreateNoteSeedsTheTitleHeadingLikeTheDesktopApp(t *testing.T) {
 		t.Fatalf("deduped body = %q, want %q", string(body), "# Note 2\n\n")
 	}
 }
+
+func TestHarperSettingsRoundTripAndNormalize(t *testing.T) {
+	root := t.TempDir()
+	v, err := New(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := v.SetSettings(VaultSettings{
+		Harper: &HarperSettings{
+			Words:        []string{" zennotes ", "zennotes", ""},
+			IgnoredLints: []string{"9722060015410969502", "not-a-hash", "9722060015410969502"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Harper == nil {
+		t.Fatal("harper settings dropped on save")
+	}
+	if len(saved.Harper.Words) != 1 || saved.Harper.Words[0] != "zennotes" {
+		t.Errorf("words = %v, want [zennotes]", saved.Harper.Words)
+	}
+	if len(saved.Harper.IgnoredLints) != 1 || saved.Harper.IgnoredLints[0] != "9722060015410969502" {
+		t.Errorf("ignoredLints = %v, want the one digit string", saved.Harper.IgnoredLints)
+	}
+	reloaded, err := v.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Harper == nil || reloaded.Harper.Words[0] != "zennotes" {
+		t.Errorf("reloaded harper = %+v", reloaded.Harper)
+	}
+	cleared, err := v.SetSettings(VaultSettings{Harper: &HarperSettings{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.Harper != nil {
+		t.Errorf("empty harper block should be dropped, got %+v", cleared.Harper)
+	}
+}

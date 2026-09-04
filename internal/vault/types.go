@@ -291,6 +291,18 @@ type VaultSettings struct {
 	// VaultSettings.typstPreambles; a first-class field for the same round-trip
 	// reason as Tasks above.
 	TypstPreambles *TypstPreambleSettings `json:"typstPreambles,omitempty"`
+	// Harper grammar-checker data that belongs to the vault (dictionary words
+	// and ignored-suggestion hashes). Mirrors shared/ipc.ts VaultSettings.harper;
+	// a first-class field for the same round-trip reason as Tasks above.
+	Harper *HarperSettings `json:"harper,omitempty"`
+}
+
+// HarperSettings mirrors shared/ipc.ts VaultSettings.harper. IgnoredLints are
+// Harper's unsigned 64-bit context hashes carried as digit strings, because
+// the browser clients cannot hold them as numbers without rounding.
+type HarperSettings struct {
+	Words        []string `json:"words"`
+	IgnoredLints []string `json:"ignoredLints"`
 }
 
 // TasksSettings mirrors shared/ipc.ts VaultSettings.tasks (#458).
