@@ -2668,17 +2668,41 @@ func (v *Vault) AssetAbsPath(rel string) (string, error) {
 
 // RenameAsset renames an asset file in place (same directory), mirroring the
 // desktop renameAsset. It refuses internal files and markdown notes, and
-// handles a case-only rename on case-insensitive filesystems. (#379)
+// handles a case-only rename on case-insensitive filesystems. (#379) Every
+// note that referenced the asset is then rewritten to its new name, the way
+// RenameNote handles inbound wikilinks. (#785)
 func (v *Vault) RenameAsset(rel, nextName string) (AssetMeta, error) {
+	// Snapshot before the move (both listings take their own read locks) so
+	// references still resolve to the asset under its current name; they are
+	// rewritten after the rename's write lock has been released.
+	assetsBefore, _ := v.ListAssets()
+	notesBefore, _ := v.ListNotes()
+	meta, oldRel, err := v.renameAssetFile(rel, nextName)
+	if err != nil {
+		return AssetMeta{}, err
+	}
+	if meta.Path != oldRel {
+		v.rewriteAssetReferences(notesBefore, assetsBefore, oldRel, meta.Path)
+	}
+	return meta, nil
+}
+
+// renameAssetFile is the locked file move behind RenameAsset. It returns the
+// new meta and the asset's vault-relative path before the move.
+func (v *Vault) renameAssetFile(rel, nextName string) (AssetMeta, string, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	srcAbs, err := v.assertAssetFile(rel)
 	if err != nil {
-		return AssetMeta{}, err
+		return AssetMeta{}, "", err
+	}
+	before, err := v.assetMetaForAbs(srcAbs)
+	if err != nil {
+		return AssetMeta{}, "", err
 	}
 	cleanName, err := cleanAssetFilename(nextName)
 	if err != nil {
-		return AssetMeta{}, err
+		return AssetMeta{}, "", err
 	}
 	destAbs := filepath.Join(filepath.Dir(srcAbs), cleanName)
 	if destAbs != srcAbs {
@@ -2688,55 +2712,77 @@ func (v *Vault) RenameAsset(rel, nextName string) (AssetMeta, error) {
 			// filesystem), routing through a temp name; otherwise it collides.
 			srcInfo, srcErr := os.Stat(srcAbs)
 			if srcErr != nil {
-				return AssetMeta{}, srcErr
+				return AssetMeta{}, "", srcErr
 			}
 			if !os.SameFile(dstInfo, srcInfo) {
-				return AssetMeta{}, fmt.Errorf("an asset named %q already exists in this folder", cleanName)
+				return AssetMeta{}, "", fmt.Errorf("an asset named %q already exists in this folder", cleanName)
 			}
 			tmp := srcAbs + ".zenrename.tmp"
 			if err := os.Rename(srcAbs, tmp); err != nil {
-				return AssetMeta{}, err
+				return AssetMeta{}, "", err
 			}
 			if err := os.Rename(tmp, destAbs); err != nil {
-				return AssetMeta{}, err
+				return AssetMeta{}, "", err
 			}
 		} else if !errors.Is(statErr, os.ErrNotExist) {
-			return AssetMeta{}, statErr
+			return AssetMeta{}, "", statErr
 		} else if err := os.Rename(srcAbs, destAbs); err != nil {
-			return AssetMeta{}, err
+			return AssetMeta{}, "", err
 		}
 	}
-	return v.assetMetaForAbs(destAbs)
+	meta, err := v.assetMetaForAbs(destAbs)
+	return meta, before.Path, err
 }
 
 // MoveAsset moves an asset file into targetDir (vault-relative; empty means the
 // unified assets/ folder), mirroring the desktop moveAsset. The filename is made
-// unique in the destination. (#379)
+// unique in the destination. (#379) Every note that referenced the asset is
+// then re-targeted to its new location, like RenameAsset. (#785)
 func (v *Vault) MoveAsset(rel, targetDir string) (AssetMeta, error) {
+	assetsBefore, _ := v.ListAssets()
+	notesBefore, _ := v.ListNotes()
+	meta, oldRel, err := v.moveAssetFile(rel, targetDir)
+	if err != nil {
+		return AssetMeta{}, err
+	}
+	if meta.Path != oldRel {
+		v.rewriteAssetReferences(notesBefore, assetsBefore, oldRel, meta.Path)
+	}
+	return meta, nil
+}
+
+// moveAssetFile is the locked file move behind MoveAsset. It returns the new
+// meta and the asset's vault-relative path before the move.
+func (v *Vault) moveAssetFile(rel, targetDir string) (AssetMeta, string, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	srcAbs, err := v.assertAssetFile(rel)
 	if err != nil {
-		return AssetMeta{}, err
+		return AssetMeta{}, "", err
+	}
+	before, err := v.assetMetaForAbs(srcAbs)
+	if err != nil {
+		return AssetMeta{}, "", err
 	}
 	destDir, err := v.cleanAssetTargetDir(targetDir)
 	if err != nil {
-		return AssetMeta{}, err
+		return AssetMeta{}, "", err
 	}
 	if err := os.MkdirAll(destDir, v.dirMode); err != nil {
-		return AssetMeta{}, err
+		return AssetMeta{}, "", err
 	}
 	if filepath.Clean(destDir) == filepath.Clean(filepath.Dir(srcAbs)) {
-		return v.assetMetaForAbs(srcAbs)
+		return before, before.Path, nil
 	}
 	name := filepath.Base(srcAbs)
 	ext := filepath.Ext(name)
 	stem := strings.TrimSuffix(name, ext)
 	destAbs := uniquePath(destDir, stem, ext)
 	if err := os.Rename(srcAbs, destAbs); err != nil {
-		return AssetMeta{}, err
+		return AssetMeta{}, "", err
 	}
-	return v.assetMetaForAbs(destAbs)
+	meta, err := v.assetMetaForAbs(destAbs)
+	return meta, before.Path, err
 }
 
 // assertAssetFile validates rel points at an existing, editable asset file and
