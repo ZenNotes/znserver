@@ -480,8 +480,10 @@ server commit plus the browser manifest it pins. To ship one:
    the new tag. It cross-compiles the binaries, writes `SHA256SUMS`, and opens a
    draft GitHub release.
 4. Verify a candidate install and a rollback, then publish the draft.
-5. Run the **Publish Docker image** workflow to push the multi-arch image to
-   Docker Hub with the version, minor, and `latest` tags.
+5. Run the **Publish Docker image** workflow from the new release tag (not from
+   `main`) to push the multi-arch image to Docker Hub with the version, minor,
+   and `latest` tags. Its environment gate asks a reviewer to approve the push.
+   Run from a branch, only the optional extra tag is published.
 
 ## License
 
