@@ -1,3 +1,5 @@
+//go:build embed_web
+
 package web
 
 import (
@@ -5,12 +7,11 @@ import (
 	"io/fs"
 )
 
-//go:embed all:dist
+//go:embed all:dist dist/index.html
 var dist embed.FS
 
-// Dist returns the embedded PWA bundle rooted at `dist/`. When the
-// client bundle has not been built yet, the subtree is empty and the
-// caller should fall back to proxying to Vite dev in development.
+// Dist returns the embedded PWA bundle. Production builds require index.html
+// at compile time so an incomplete asset bundle cannot produce a release binary.
 func Dist() (fs.FS, error) {
 	return fs.Sub(dist, "dist")
 }

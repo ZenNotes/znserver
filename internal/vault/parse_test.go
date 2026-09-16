@@ -1,6 +1,9 @@
 package vault
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestBodyHasLocalAssetDetectsOnlyLocalAssets(t *testing.T) {
 	cases := []struct {
@@ -313,5 +316,29 @@ func TestParseTasksWithIncludeExcluded(t *testing.T) {
 	// Index counting is untouched by the gate, so ids stay stable.
 	if tasks[1].ID != "inbox/t.md#0" || tasks[2].ID != "inbox/t.md#1" {
 		t.Errorf("inline ids %q, %q, want #0 and #1", tasks[1].ID, tasks[2].ID)
+	}
+}
+
+func TestExtractAssetEmbedsMatchesDesktopTargets(t *testing.T) {
+	cases := []struct {
+		name, body string
+		want       []string
+	}{
+		{"empty", "plain text", []string{}},
+		{"JavaScript whitespace", "![](\u00a0<photo.png>) ![](first\u00a0part.png) ![[\ufeffdrawing.psd\ufeff]]", []string{"drawing.psd", "photo.png", "first"}},
+		{"generic files", "![[design.psd|Source]] ![[file.zip#section]] ![[file.custom?download]] ![[Note#dot.png]]", []string{"design.psd", "file.zip#section", "file.custom?download"}},
+		{"wiki assets only", "![[photo.png|Preview]] ![[brief.pdf]] ![[Other Note]] [[plain.png]]", []string{"photo.png", "brief.pdf"}},
+		{"wiki before markdown with deduplication", "![](a.png) ![[b.png]] ![[a.png]] ![](b.png)", []string{"b.png", "a.png"}},
+		{"decoded targets", "![Photo](<assets/photo%20two.png> \"title\") ![](plus+sign.png) ![](%E6%97%A5.png)", []string{"assets/photo two.png", "plus+sign.png", "日.png"}},
+		{"malformed escapes", "![](bad%GG.png) ![](%FF.png)", []string{"bad%GG.png", "%FF.png"}},
+		{"remote and anchors", "![](https://example.com/x.png) ![](data:image/png;base64,abc) ![](custom_app:x) ![](#heading)", []string{}},
+		{"code", "`![[inline.png]]`\n  ~~~md\n![](fenced.png)\n  ~~~\n![[visible.png]]", []string{"visible.png"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ExtractAssetEmbeds(tc.body); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %#v, want %#v", got, tc.want)
+			}
+		})
 	}
 }

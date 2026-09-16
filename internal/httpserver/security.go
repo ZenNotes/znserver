@@ -469,9 +469,10 @@ func sessionStatusPayload(authenticated bool, cfg config.Config) map[string]any 
 
 func (s *Server) sessionCookie(r *http.Request, token string, expiresAt time.Time) *http.Cookie {
 	cookie := &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    token,
-		Path:     "/api",
+		Name:  sessionCookieName,
+		Value: token,
+		// One path supports canonical and legacy routes across browser upgrades.
+		Path:     config.NormalizeBasePath(s.currentConfig().BasePath) + "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 		Expires:  expiresAt,
@@ -486,6 +487,12 @@ func (s *Server) clearSessionCookie(r *http.Request) *http.Cookie {
 	cookie := s.sessionCookie(r, "", time.Unix(0, 0))
 	cookie.MaxAge = -1
 	return cookie
+}
+
+func (s *Server) expireOldAPICookie(w http.ResponseWriter, r *http.Request) {
+	cookie := s.clearSessionCookie(r)
+	cookie.Path = config.NormalizeBasePath(s.currentConfig().BasePath) + "/api"
+	http.SetCookie(w, cookie)
 }
 
 func (s *Server) requestAuthenticatedViaSession(r *http.Request) bool {
@@ -548,6 +555,7 @@ func (s *Server) sessionLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.SetCookie(w, s.sessionCookie(r, token, expiresAt))
+		s.expireOldAPICookie(w, r)
 		writeJSON(w, http.StatusOK, sessionStatusPayload(true, cfg))
 		return
 	}
@@ -556,10 +564,13 @@ func (s *Server) sessionLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sessionLogout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(sessionCookieName); err == nil {
-		s.sessions.delete(cookie.Value)
+	for _, cookie := range r.Cookies() {
+		if cookie.Name == sessionCookieName {
+			s.sessions.delete(cookie.Value)
+		}
 	}
 	http.SetCookie(w, s.clearSessionCookie(r))
+	s.expireOldAPICookie(w, r)
 	writeJSON(w, http.StatusOK, sessionStatusPayload(false, s.currentConfig()))
 }
 
@@ -617,6 +628,7 @@ func (s *Server) sessionRotateToken(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sessions.deleteAll()
 	http.SetCookie(w, s.clearSessionCookie(r))
+	s.expireOldAPICookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]any{"rotated": true})
 }
 

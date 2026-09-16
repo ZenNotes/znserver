@@ -1,10 +1,53 @@
 package vault
 
 import (
+	"net/url"
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
+
+// RE2's \s is ASCII-only; JavaScript also treats these Unicode characters as whitespace.
+const assetEmbedSpaceClass = `\t\n\v\f\r \x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}`
+const assetEmbedTrimSpace = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+
+var assetEmbedMarkdownRe = regexp.MustCompile(`!\[[^\]]*\]\([` + assetEmbedSpaceClass + `]*<?([^)>` + assetEmbedSpaceClass + `]+)>?[^)]*\)`)
+var assetEmbedSchemeRe = regexp.MustCompile(`^[a-zA-Z][\w+.\-]*:`)
+
+// ExtractAssetEmbeds mirrors extractAssetEmbeds in apps/desktop/src/main/vault.ts.
+// Keep target order and URI decoding equivalent so both hosts report the same usage.
+func ExtractAssetEmbeds(body string) []string {
+	stripped := stripCodeContent(body)
+	out := []string{}
+	seen := map[string]bool{}
+	add := func(target string) {
+		if !seen[target] {
+			seen[target] = true
+			out = append(out, target)
+		}
+	}
+	for _, match := range embedRe.FindAllStringSubmatch(stripped, -1) {
+		target := strings.Trim(match[1], assetEmbedTrimSpace)
+		// Desktop also accepts generic file extensions, beyond previewable media.
+		clean := strings.SplitN(strings.SplitN(target, "#", 2)[0], "?", 2)[0]
+		if strings.Contains(clean, ".") {
+			add(target)
+		}
+	}
+	for _, match := range assetEmbedMarkdownRe.FindAllStringSubmatch(stripped, -1) {
+		raw := strings.Trim(match[1], assetEmbedTrimSpace)
+		if raw == "" || strings.HasPrefix(raw, "#") || assetEmbedSchemeRe.MatchString(raw) {
+			continue
+		}
+		if decoded, err := url.PathUnescape(raw); err == nil && utf8.ValidString(decoded) {
+			add(decoded)
+		} else {
+			add(raw)
+		}
+	}
+	return out
+}
 
 // Regexes below mirror the TS extractors in src/main/vault.ts. They are
 // intentionally the same shape so the extracted metadata matches the

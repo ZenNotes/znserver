@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -448,6 +449,7 @@ func TestListNotesUsesMatchingPersistedMetadata(t *testing.T) {
 				Size:           info.Size(),
 				Tags:           []string{"cached"},
 				Wikilinks:      []string{"Cached Target"},
+				AssetEmbeds:    []string{},
 				HasAttachments: false,
 				Excerpt:        "cached excerpt",
 			},
@@ -506,6 +508,7 @@ func TestListNotesIgnoresStalePersistedMetadata(t *testing.T) {
 				Size:           1,
 				Tags:           []string{"stale"},
 				Wikilinks:      []string{},
+				AssetEmbeds:    []string{},
 				HasAttachments: false,
 				Excerpt:        "stale excerpt",
 			},
@@ -1323,5 +1326,453 @@ func TestNoteCommentsKeepAuthorAndThreadReplies(t *testing.T) {
 	}
 	if read[2].ParentID != "" {
 		t.Fatalf("orphan reply kept a missing parent: %#v", read[2])
+	}
+}
+
+func TestListNotesRebuildsCacheWithoutAssetEmbeds(t *testing.T) {
+	for _, version := range []int{1, noteMetaCacheVersion} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			v, err := New(t.TempDir(), Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta, err := v.WriteNote("inbox/asset-cache.md", "![[photo.png]]\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(filepath.Join(v.Root(), filepath.FromSlash(meta.Path)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta.AssetEmbeds = nil
+			cache := persistedNoteMetaCache{Version: version, Entries: []persistedNoteMetaEntry{{Path: meta.Path, MtimeMs: mtimeMs(info), Size: info.Size(), Meta: meta}}}
+			raw, err := json.Marshal(cache)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cachePath := v.noteMetaCachePath()
+			if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cachePath, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			v.invalidateNoteMetaCache()
+			notes, err := v.ListNotes()
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, ok := findNoteMeta(notes, meta.Path)
+			if !ok || len(got.AssetEmbeds) != 1 || got.AssetEmbeds[0] != "photo.png" {
+				t.Fatalf("cache did not rebuild asset metadata: %#v", got)
+			}
+		})
+	}
+}
+
+func TestFolderMutationsPreserveCommentStorage(t *testing.T) {
+	for _, location := range []PrimaryNotesLocation{PrimaryNotesInbox, PrimaryNotesRoot} {
+		t.Run(string(location), func(t *testing.T) {
+			v, err := New(t.TempDir(), Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings, err := v.GetSettings()
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings.PrimaryNotesLocation = PrimaryNotesLocation(location)
+			settings.SystemFolderPaths = map[string]string{string(FolderInbox): "My Notes"}
+			if _, err := v.SetSettings(settings); err != nil {
+				t.Fatal(err)
+			}
+			prefix := "My Notes/"
+			if location == PrimaryNotesRoot {
+				prefix = ""
+			}
+			original := prefix + "Work/Nested/Note.md"
+			if _, err := v.WriteNote(original, "Body.\n"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.WriteNoteComments(original, []NoteComment{{ID: "comment", Body: "Keep this comment", CreatedAt: 1, UpdatedAt: 1}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.RenameFolder(FolderInbox, "Work", "Renamed"); err != nil {
+				t.Fatal(err)
+			}
+			renamed := prefix + "Renamed/Nested/Note.md"
+			comments, err := v.ReadNoteComments(renamed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(comments) != 1 || comments[0].Body != "Keep this comment" || comments[0].NotePath != renamed {
+				t.Fatalf("comments lost: %#v", comments)
+			}
+			old, err := v.ReadNoteComments(original)
+			if err != nil || len(old) != 0 {
+				t.Fatalf("old comments remain: %#v %v", old, err)
+			}
+			if err := v.DeleteFolder(FolderInbox, "Renamed"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.WriteNote(renamed, "New note.\n"); err != nil {
+				t.Fatal(err)
+			}
+			comments, err = v.ReadNoteComments(renamed)
+			if err != nil || len(comments) != 0 {
+				t.Fatalf("deleted comments returned: %#v %v", comments, err)
+			}
+		})
+	}
+}
+
+func TestFolderTreesRollbackOnSettingsFailure(t *testing.T) {
+	root := t.TempDir()
+	v, err := New(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "content")
+	comments := filepath.Join(root, "comments")
+	for _, dir := range []string{source, comments} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = v.relocateFolderTrees([][2]string{{source, source + "-new"}, {comments, comments + "-new"}}, func() error { return errors.New("settings failed") })
+	if err == nil {
+		t.Fatal("expected settings failure")
+	}
+	for _, dir := range []string{source, comments} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, dir := range []string{source + "-new", comments + "-new"} {
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("target remains: %s", dir)
+		}
+	}
+}
+
+func TestFolderRenameRejectsMissingSourceAndCommentCollision(t *testing.T) {
+	v, err := New(t.TempDir(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.RenameFolder(FolderInbox, "Missing", "New"); err == nil {
+		t.Fatal("missing source accepted")
+	}
+	if _, err := v.WriteNote("inbox/Work/Note.md", "Original"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.WriteNoteComments("inbox/Renamed/Note.md", []NoteComment{{ID: "orphan", Body: "Retain", CreatedAt: 1, UpdatedAt: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.RenameFolder(FolderInbox, "Work", "Renamed"); err == nil {
+		t.Fatal("comment collision accepted")
+	}
+	if _, err := v.ReadNote("inbox/Work/Note.md"); err != nil {
+		t.Fatal(err)
+	}
+	comments, err := v.ReadNoteComments("inbox/Renamed/Note.md")
+	if err != nil || len(comments) != 1 {
+		t.Fatalf("orphan lost: %v %v", comments, err)
+	}
+}
+
+func TestDeleteFolderInFreshVault(t *testing.T) {
+	v, err := New(t.TempDir(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.WriteNote("inbox/Work/Note.md", "Original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.DeleteFolder(FolderInbox, "Work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(v.root, "inbox/Work")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("folder remains: %v", err)
+	}
+}
+
+func TestNoteMoveRetainsSourceOnCommentCollision(t *testing.T) {
+	for _, withComments := range []bool{false, true} {
+		t.Run(fmt.Sprint(withComments), func(t *testing.T) {
+			v, err := New(t.TempDir(), Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := "Original café.  \n"
+			if _, err := v.WriteNote("inbox/One.md", original); err != nil {
+				t.Fatal(err)
+			}
+			if withComments {
+				if _, err := v.WriteNoteComments("inbox/One.md", []NoteComment{{ID: "source", Body: "Source discussion", CreatedAt: 1, UpdatedAt: 1}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := v.WriteNoteComments("inbox/Work/One.md", []NoteComment{{ID: "destination", Body: "Keep destination", CreatedAt: 1, UpdatedAt: 1}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.MoveNote("inbox/One.md", FolderInbox, "Work"); err == nil {
+				t.Fatal("expected collision")
+			}
+			content, err := v.ReadNote("inbox/One.md")
+			if err != nil || content.Body != original {
+				t.Fatalf("source lost: %#v %v", content, err)
+			}
+			if _, err := os.Stat(filepath.Join(v.Root(), "inbox/Work/One.md")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("target exists: %v", err)
+			}
+			comments, err := v.ReadNoteComments("inbox/Work/One.md")
+			if err != nil || len(comments) != 1 || comments[0].Body != "Keep destination" {
+				t.Fatalf("target comments changed: %#v %v", comments, err)
+			}
+		})
+	}
+}
+
+func TestNoteRenameRetainsSourceOnCommentCollision(t *testing.T) {
+	for _, withComments := range []bool{false, true} {
+		t.Run(fmt.Sprint(withComments), func(t *testing.T) {
+			v, err := New(t.TempDir(), Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := "Original café.  \n"
+			if _, err := v.WriteNote("inbox/One.md", original); err != nil {
+				t.Fatal(err)
+			}
+			if withComments {
+				if _, err := v.WriteNoteComments("inbox/One.md", []NoteComment{{ID: "source", Body: "Source discussion", CreatedAt: 1, UpdatedAt: 1}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := v.WriteNoteComments("inbox/Renamed.md", []NoteComment{{ID: "destination", Body: "Keep destination", CreatedAt: 1, UpdatedAt: 1}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.RenameNote("inbox/One.md", "Renamed"); err == nil {
+				t.Fatal("expected collision")
+			}
+			content, err := v.ReadNote("inbox/One.md")
+			if err != nil || content.Body != original {
+				t.Fatalf("source lost: %#v %v", content, err)
+			}
+			if _, err := os.Stat(filepath.Join(v.Root(), "inbox/Renamed.md")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("target exists: %v", err)
+			}
+			comments, err := v.ReadNoteComments("inbox/Renamed.md")
+			if err != nil || len(comments) != 1 || comments[0].Body != "Keep destination" {
+				t.Fatalf("target comments changed: %#v %v", comments, err)
+			}
+		})
+	}
+}
+
+func TestRenameNoteCaseOnlyKeepsFilenameAndComments(t *testing.T) {
+	v, err := New(t.TempDir(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.WriteNote("inbox/One.md", "Keep café.  \n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.WriteNoteComments("inbox/One.md", []NoteComment{{ID: "one", Body: "Keep discussion", CreatedAt: 1, UpdatedAt: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := v.RenameNote("inbox/One.md", "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Path != "inbox/one.md" {
+		t.Fatalf("unexpected path: %s", meta.Path)
+	}
+	entries, err := os.ReadDir(filepath.Join(v.Root(), "inbox"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range entries {
+		if entry.Name() == "One.md" {
+			t.Fatal("old spelling remains on disk")
+		}
+		if entry.Name() == "one.md" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("new spelling missing on disk")
+	}
+	comments, err := v.ReadNoteComments(meta.Path)
+	if err != nil || len(comments) != 1 || comments[0].Body != "Keep discussion" {
+		t.Fatalf("lost comments: %#v %v", comments, err)
+	}
+}
+
+func TestNoteLifecycleCommentCollisions(t *testing.T) {
+	for _, action := range []string{"archive", "trash", "unarchive", "restore"} {
+		t.Run(action, func(t *testing.T) {
+			v, err := New(t.TempDir(), Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, target := "inbox/One.md", "archive/One.md"
+			mutate := v.ArchiveNote
+			switch action {
+			case "trash":
+				target = "trash/One.md"
+				mutate = v.MoveToTrash
+			case "unarchive":
+				source = "archive/One.md"
+				target = "inbox/One.md"
+				mutate = v.UnarchiveNote
+			case "restore":
+				source = "trash/One.md"
+				target = "inbox/One.md"
+				mutate = v.RestoreFromTrash
+			}
+			if _, err := v.WriteNote(source, "Keep café.  \n"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.WriteNoteComments(target, []NoteComment{{ID: "orphan", Body: "Keep target discussion", CreatedAt: 1, UpdatedAt: 1}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := mutate(source); err == nil {
+				t.Fatal("expected comment collision")
+			}
+			note, err := v.ReadNote(source)
+			if err != nil || note.Body != "Keep café.  \n" {
+				t.Fatalf("lost source: %#v %v", note, err)
+			}
+			if _, err := os.Stat(filepath.Join(v.Root(), target)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("target remains: %v", err)
+			}
+			comments, err := v.ReadNoteComments(target)
+			if err != nil || len(comments) != 1 || comments[0].Body != "Keep target discussion" {
+				t.Fatalf("lost discussion: %#v %v", comments, err)
+			}
+		})
+	}
+}
+
+func TestNoteLifecycleRoundTripAndDeletion(t *testing.T) {
+	for _, location := range []string{"inbox", "root"} {
+		t.Run(location, func(t *testing.T) {
+			v, err := New(t.TempDir(), Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings, err := v.GetSettings()
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings.PrimaryNotesLocation = PrimaryNotesLocation(location)
+			settings.SystemFolderPaths = map[string]string{"inbox": "My Notes", "archive": "Filed", "trash": "Bin"}
+			if _, err := v.SetSettings(settings); err != nil {
+				t.Fatal(err)
+			}
+			original := "My Notes/One.md"
+			if location == "root" {
+				original = "One.md"
+			}
+			body := "Keep café 日本語.  \n"
+			if _, err := v.WriteNote(original, body); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.WriteNoteComments(original, []NoteComment{{ID: "source", Body: "Discussion", CreatedAt: 1, UpdatedAt: 1}}); err != nil {
+				t.Fatal(err)
+			}
+			meta, err := v.ArchiveNote(original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if meta.Path != "Filed/One.md" {
+				t.Fatal(meta.Path)
+			}
+			meta, err = v.UnarchiveNote(meta.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if meta.Path != original {
+				t.Fatal(meta.Path)
+			}
+			meta, err = v.MoveToTrash(meta.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if meta.Path != "Bin/One.md" {
+				t.Fatal(meta.Path)
+			}
+			meta, err = v.RestoreFromTrash(meta.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			note, err := v.ReadNote(meta.Path)
+			if err != nil || note.Body != body {
+				t.Fatalf("lost bytes: %#v %v", note, err)
+			}
+			comments, err := v.ReadNoteComments(meta.Path)
+			if err != nil || len(comments) != 1 || comments[0].Body != "Discussion" {
+				t.Fatalf("lost comments: %#v %v", comments, err)
+			}
+			if err := v.DeleteNote(meta.Path); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.WriteNote(meta.Path, "New note"); err != nil {
+				t.Fatal(err)
+			}
+			comments, err = v.ReadNoteComments(meta.Path)
+			if err != nil || len(comments) != 0 {
+				t.Fatalf("resurrected comments: %#v %v", comments, err)
+			}
+		})
+	}
+}
+
+func TestEmptyTrashRespectsRemappedPath(t *testing.T) {
+	for _, location := range []PrimaryNotesLocation{PrimaryNotesRoot, PrimaryNotesInbox} {
+		t.Run(string(location), func(t *testing.T) {
+			v, err := New(t.TempDir(), Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings, err := v.GetSettings()
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings.PrimaryNotesLocation = location
+			settings.SystemFolderPaths = map[string]string{"trash": "Deleted files"}
+			if _, err := v.SetSettings(settings); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.WriteNote("Deleted files/Nested/One.md", "Delete me"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.WriteNoteComments("Deleted files/Nested/One.md", []NoteComment{{ID: "comment", Body: "Remove discussion", CreatedAt: 1, UpdatedAt: 1}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.WriteNote("trash/Unrelated.md", "Keep literal trash folder"); err != nil {
+				t.Fatal(err)
+			}
+			if err := v.EmptyTrash(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(v.Root(), "Deleted files/Nested/One.md")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("note remains: %v", err)
+			}
+			comments, err := v.ReadNoteComments("Deleted files/Nested/One.md")
+			if err != nil || len(comments) != 0 {
+				t.Fatalf("comments remain: %#v %v", comments, err)
+			}
+			body, err := os.ReadFile(filepath.Join(v.Root(), "trash/Unrelated.md"))
+			if err != nil || string(body) != "Keep literal trash folder" {
+				t.Fatalf("unrelated note changed: %s %v", body, err)
+			}
+			if err := v.EmptyTrash(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

@@ -331,6 +331,7 @@ type NoteMeta struct {
 	Size           int64      `json:"size"`
 	Tags           []string   `json:"tags"`
 	Wikilinks      []string   `json:"wikilinks"`
+	AssetEmbeds    []string   `json:"assetEmbeds"`
 	HasAttachments bool       `json:"hasAttachments"`
 	Excerpt        string     `json:"excerpt"`
 }

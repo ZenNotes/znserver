@@ -93,3 +93,35 @@ func TestRenameNoteRewritesInboundWikilinks(t *testing.T) {
 		t.Fatalf("source after rename =\n%q\nwant\n%q", got.Body, want)
 	}
 }
+
+func TestRenameNoteRewritesAnchoredOnlyInboundWikilinks(t *testing.T) {
+	root := t.TempDir()
+	v, err := New(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.WriteNote("inbox/Target.md", "# Target\n"); err != nil {
+		t.Fatal(err)
+	}
+	src := "See [[Target#Heading|alias]].\n\nCode stays: `[[Target]]`\n"
+	if _, err := v.WriteNote("inbox/Source.md", src); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, err := v.RenameNote("inbox/Target.md", "Renamed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Title != "Renamed" {
+		t.Fatalf("renamed title = %q, want Renamed", meta.Title)
+	}
+
+	got, err := v.ReadNote("inbox/Source.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "See [[Renamed#Heading|alias]].\n\nCode stays: `[[Target]]`\n"
+	if got.Body != want {
+		t.Fatalf("source after rename =\n%q\nwant\n%q", got.Body, want)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"io"
 	"io/fs"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -26,7 +27,7 @@ const (
 	internalVaultDir      = ".zennotes"
 	vaultSettingsFile     = "vault.json"
 	noteMetaCacheFile     = "note-meta-cache-v1.json"
-	noteMetaCacheVersion  = 1
+	noteMetaCacheVersion  = 2
 	noteCommentsDir       = "comments"
 	noteCommentsSuffix    = ".comments.json"
 	noteMetaReadLimit     = 64
@@ -1025,7 +1026,7 @@ func validCachedNoteMeta(meta NoteMeta, path string) bool {
 	if meta.Path != path || meta.Title == "" || !IsValidFolder(meta.Folder) {
 		return false
 	}
-	if meta.Tags == nil || meta.Wikilinks == nil {
+	if meta.Tags == nil || meta.Wikilinks == nil || meta.AssetEmbeds == nil {
 		return false
 	}
 	return true
@@ -1456,19 +1457,21 @@ func kindForExt(ext string) string {
 // color like "#1971c2" in the scene must not register as a #tag.
 func buildNoteMeta(relPosix, title string, folder NoteFolder, info os.FileInfo, bodyStr, preambleFolder string) NoteMeta {
 	meta := NoteMeta{
-		Path:      relPosix,
-		Title:     title,
-		Folder:    folder,
-		CreatedAt: info.ModTime().UnixMilli(),
-		UpdatedAt: info.ModTime().UnixMilli(),
-		Size:      info.Size(),
-		Tags:      []string{},
-		Wikilinks: []string{},
+		Path:        relPosix,
+		Title:       title,
+		Folder:      folder,
+		CreatedAt:   info.ModTime().UnixMilli(),
+		UpdatedAt:   info.ModTime().UnixMilli(),
+		Size:        info.Size(),
+		Tags:        []string{},
+		Wikilinks:   []string{},
+		AssetEmbeds: []string{},
 	}
 	if isExcalidrawName(relPosix) {
 		return meta
 	}
 	meta.Wikilinks = ExtractWikilinks(bodyStr)
+	meta.AssetEmbeds = ExtractAssetEmbeds(bodyStr)
 	meta.HasAttachments = BodyHasLocalAsset(bodyStr)
 	meta.Excerpt = BuildExcerpt(bodyStr)
 	// A Typst preamble holds Typst source, not prose: `#let vec(x) = bold(x)`
@@ -1923,7 +1926,10 @@ func (v *Vault) CreateExcalidraw(folder NoteFolder, title, subpath string) (Note
 func (v *Vault) RenameNote(rel, nextTitle string) (NoteMeta, error) {
 	// Snapshot the vault before the rename (ListNotes takes its own read lock)
 	// so inbound [[wikilinks]] still resolve to this note under its current name.
-	notesBefore, _ := v.ListNotes()
+	notesBefore, err := v.ListNotes()
+	if err != nil {
+		return NoteMeta{}, err
+	}
 	meta, err := v.renameNoteFile(rel, nextTitle)
 	if err != nil {
 		return NoteMeta{}, err
@@ -1948,19 +1954,42 @@ func (v *Vault) renameNoteFile(rel, nextTitle string) (NoteMeta, error) {
 		return NoteMeta{}, errors.New("empty title")
 	}
 	dir := filepath.Dir(abs)
-	newAbs := uniquePath(dir, nextTitle, noteExt(abs))
-	if err := os.Rename(abs, newAbs); err != nil {
-		return NoteMeta{}, err
-	}
-	v.invalidateTextSearchCache()
-	folder, _ := v.folderOf(newAbs)
-	meta, err := v.readMeta(folder, newAbs)
+	desired := filepath.Join(dir, nextTitle+noteExt(abs))
+	newAbs := desired
+	source, err := os.Stat(abs)
 	if err != nil {
 		return NoteMeta{}, err
 	}
-	if err := v.moveNoteCommentsLocked(rel, meta.Path); err != nil {
+	if target, statErr := os.Stat(desired); statErr == nil {
+		if !os.SameFile(source, target) {
+			newAbs = uniquePath(dir, nextTitle, noteExt(abs))
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return NoteMeta{}, statErr
+	}
+	nextRel, err := filepath.Rel(v.root, newAbs)
+	if err != nil {
 		return NoteMeta{}, err
 	}
+	oldComments, err := v.commentsPath(rel)
+	if err != nil {
+		return NoteMeta{}, err
+	}
+	nextComments, err := v.commentsPath(filepath.ToSlash(nextRel))
+	if err != nil {
+		return NoteMeta{}, err
+	}
+	folder, _ := v.folderOf(newAbs)
+	var meta NoteMeta
+	err = v.relocateFolderTrees([][2]string{{abs, newAbs}, {oldComments, nextComments}}, func() error {
+		var readErr error
+		meta, readErr = v.readMeta(folder, newAbs)
+		return readErr
+	})
+	if err != nil {
+		return NoteMeta{}, err
+	}
+	v.invalidateTextSearchCache()
 	return meta, nil
 }
 
@@ -1974,7 +2003,8 @@ func (v *Vault) rewriteInboundWikilinks(notesBefore []NoteMeta, oldPath, newTitl
 		}
 		linksToIt := false
 		for _, t := range n.Wikilinks {
-			if r, ok := wikiResolveTarget(notesBefore, t); ok && r.Path == oldPath {
+			target, _, _ := wikiSplitContent(t)
+			if r, ok := wikiResolveTarget(notesBefore, target); ok && r.Path == oldPath {
 				linksToIt = true
 				break
 			}
@@ -2000,11 +2030,33 @@ func (v *Vault) DeleteNote(rel string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(abs); err != nil {
+	info, err := os.Lstat(abs)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return errors.New("use the folder action to delete a directory")
+	}
+	comments, err := v.commentsPath(rel)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(v.root, internalVaultDir), v.dirMode); err != nil {
+		return err
+	}
+	temporary, err := os.MkdirTemp(filepath.Join(v.root, internalVaultDir), "note-delete-")
+	if err != nil {
+		return err
+	}
+	if err := v.relocateFolderTrees([][2]string{{abs, filepath.Join(temporary, "content")}, {comments, filepath.Join(temporary, "comments")}}, func() error { return nil }); err != nil {
 		return err
 	}
 	v.invalidateTextSearchCache()
-	return v.removeNoteCommentsLocked(rel)
+	// Cleanup cannot resurrect comments at a live note path.
+	if err := os.RemoveAll(temporary); err != nil {
+		log.Printf("note cleanup pending: %v", err)
+	}
+	return nil
 }
 
 // --- Trash / Restore / Archive / Unarchive / Duplicate / Move ---
@@ -2069,33 +2121,60 @@ func (v *Vault) moveBetweenFolders(rel string, target NoteFolder) (NoteMeta, err
 		return NoteMeta{}, err
 	}
 	newAbs := uniquePath(destDir, title, noteExt(abs))
-	if err := os.Rename(abs, newAbs); err != nil {
-		return NoteMeta{}, err
-	}
-	v.invalidateTextSearchCache()
-	meta, err := v.readMeta(target, newAbs)
+	nextRel, err := filepath.Rel(v.root, newAbs)
 	if err != nil {
 		return NoteMeta{}, err
 	}
-	if err := v.moveNoteCommentsLocked(rel, meta.Path); err != nil {
+	oldComments, err := v.commentsPath(rel)
+	if err != nil {
 		return NoteMeta{}, err
 	}
+	nextComments, err := v.commentsPath(filepath.ToSlash(nextRel))
+	if err != nil {
+		return NoteMeta{}, err
+	}
+	var meta NoteMeta
+	err = v.relocateFolderTrees([][2]string{{abs, newAbs}, {oldComments, nextComments}}, func() error {
+		var readErr error
+		meta, readErr = v.readMeta(target, newAbs)
+		return readErr
+	})
+	if err != nil {
+		return NoteMeta{}, err
+	}
+	v.invalidateTextSearchCache()
 	return meta, nil
 }
 
 func (v *Vault) EmptyTrash() error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	trashDir := filepath.Join(v.root, string(FolderTrash))
-	entries, err := os.ReadDir(trashDir)
+	trashDir, err := v.folderRoot(FolderTrash)
 	if err != nil {
-		return nil
+		return err
 	}
-	for _, e := range entries {
-		_ = v.removeNoteCommentsLocked(filepath.ToSlash(filepath.Join(string(FolderTrash), e.Name())))
-		_ = os.RemoveAll(filepath.Join(trashDir, e.Name()))
+	rel, err := filepath.Rel(v.root, trashDir)
+	if err != nil {
+		return err
+	}
+	comments, err := SafeJoin(v.commentsRoot(), rel)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(v.root, internalVaultDir), v.dirMode); err != nil {
+		return err
+	}
+	temporary, err := os.MkdirTemp(filepath.Join(v.root, internalVaultDir), "trash-delete-")
+	if err != nil {
+		return err
+	}
+	if err := v.relocateFolderTrees([][2]string{{trashDir, filepath.Join(temporary, "content")}, {comments, filepath.Join(temporary, "comments")}}, func() error { return nil }); err != nil {
+		return err
 	}
 	v.invalidateTextSearchCache()
+	if err := os.RemoveAll(temporary); err != nil {
+		log.Printf("trash cleanup pending: %v", err)
+	}
 	return nil
 }
 
@@ -2149,17 +2228,28 @@ func (v *Vault) MoveNote(rel string, target NoteFolder, targetSubpath string) (N
 	}
 	title := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
 	newAbs := uniquePath(destDir, title, noteExt(abs))
-	if err := os.Rename(abs, newAbs); err != nil {
-		return NoteMeta{}, err
-	}
-	v.invalidateTextSearchCache()
-	meta, err := v.readMeta(target, newAbs)
+	nextRel, err := filepath.Rel(v.root, newAbs)
 	if err != nil {
 		return NoteMeta{}, err
 	}
-	if err := v.moveNoteCommentsLocked(rel, meta.Path); err != nil {
+	oldComments, err := v.commentsPath(rel)
+	if err != nil {
 		return NoteMeta{}, err
 	}
+	nextComments, err := v.commentsPath(filepath.ToSlash(nextRel))
+	if err != nil {
+		return NoteMeta{}, err
+	}
+	var meta NoteMeta
+	err = v.relocateFolderTrees([][2]string{{abs, newAbs}, {oldComments, nextComments}}, func() error {
+		var readErr error
+		meta, readErr = v.readMeta(target, newAbs)
+		return readErr
+	})
+	if err != nil {
+		return NoteMeta{}, err
+	}
+	v.invalidateTextSearchCache()
 	return meta, nil
 }
 
@@ -2182,6 +2272,53 @@ func (v *Vault) CreateFolder(folder NoteFolder, subpath string) error {
 	return os.MkdirAll(abs, v.dirMode)
 }
 
+// relocateFolderTrees keeps content and its parallel comment tree together.
+func (v *Vault) relocateFolderTrees(moves [][2]string, persistSettings func() error) error {
+	present := make([][2]string, 0, len(moves))
+	for _, move := range moves {
+		source, err := os.Stat(move[0])
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if target, err := os.Stat(move[1]); err == nil {
+			if source == nil || !os.SameFile(source, target) {
+				return errors.New("destination folder or its comments already exist")
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if source != nil {
+			present = append(present, move)
+		}
+	}
+	moved := make([][2]string, 0, len(present))
+	rollback := func(cause error) error {
+		failures := []error{cause}
+		for i := len(moved) - 1; i >= 0; i-- {
+			if err := os.Rename(moved[i][1], moved[i][0]); err != nil {
+				failures = append(failures, err)
+			}
+		}
+		if len(failures) > 1 {
+			return fmt.Errorf("FOLDER_STATE_UNCERTAIN: Folder change could not be rolled back; reload the vault before editing: %w", errors.Join(failures...))
+		}
+		return cause
+	}
+	for _, move := range present {
+		if err := os.MkdirAll(filepath.Dir(move[1]), v.dirMode); err != nil {
+			return rollback(err)
+		}
+		if err := os.Rename(move[0], move[1]); err != nil {
+			return rollback(err)
+		}
+		moved = append(moved, move)
+	}
+	if err := persistSettings(); err != nil {
+		return rollback(err)
+	}
+	return nil
+}
+
 func (v *Vault) RenameFolder(folder NoteFolder, oldSub, newSub string) (string, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -2197,31 +2334,40 @@ func (v *Vault) RenameFolder(folder NoteFolder, oldSub, newSub string) (string, 
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(newAbs), v.dirMode); err != nil {
+	if oldAbs == base {
+		return "", errors.New("refusing to rename top-level folder")
+	}
+	if _, err := os.Stat(oldAbs); err != nil {
 		return "", err
 	}
-	if err := os.Rename(oldAbs, newAbs); err != nil {
+	if strings.HasPrefix(newAbs+string(filepath.Separator), oldAbs+string(filepath.Separator)) && newAbs != oldAbs {
+		return "", errors.New("cannot move a folder into itself")
+	}
+	oldRel, _ := filepath.Rel(v.root, oldAbs)
+	newRel, _ := filepath.Rel(v.root, newAbs)
+	oldComments, err := SafeJoin(v.commentsRoot(), oldRel)
+	if err != nil {
 		return "", err
 	}
-	v.invalidateTextSearchCache()
+	newComments, err := SafeJoin(v.commentsRoot(), newRel)
+	if err != nil {
+		return "", err
+	}
 	settings, err := v.GetSettings()
 	if err != nil {
 		return "", err
 	}
-	_, err = v.SetSettings(VaultSettings{
-		PrimaryNotesLocation: settings.PrimaryNotesLocation,
-		DailyNotes:           settings.DailyNotes,
-		WeeklyNotes:          settings.WeeklyNotes,
-		MonthlyNotes:         settings.MonthlyNotes,
-		FolderIcons:          rewriteFolderIconsForRename(settings.FolderIcons, folder, oldSub, newSub),
-		FolderColors:         rewriteFolderColorsForRename(settings.FolderColors, folder, oldSub, newSub),
-		// Favorites are carried through verbatim; the client rewrites stale
-		// favorite keys after the rename and re-persists them.
-		Favorites: settings.Favorites,
+	err = v.relocateFolderTrees([][2]string{{oldAbs, newAbs}, {oldComments, newComments}}, func() error {
+		next := settings
+		next.FolderIcons = rewriteFolderIconsForRename(settings.FolderIcons, folder, oldSub, newSub)
+		next.FolderColors = rewriteFolderColorsForRename(settings.FolderColors, folder, oldSub, newSub)
+		_, err := v.SetSettings(next)
+		return err
 	})
 	if err != nil {
 		return "", err
 	}
+	v.invalidateTextSearchCache()
 	rel, _ := filepath.Rel(base, newAbs)
 	return filepath.ToSlash(rel), nil
 }
@@ -2240,26 +2386,38 @@ func (v *Vault) DeleteFolder(folder NoteFolder, subpath string) error {
 	if abs == base {
 		return errors.New("refusing to delete top-level folder")
 	}
-	if err := os.RemoveAll(abs); err != nil {
+	rel, _ := filepath.Rel(v.root, abs)
+	comments, err := SafeJoin(v.commentsRoot(), rel)
+	if err != nil {
 		return err
 	}
-	v.invalidateTextSearchCache()
+	if err := os.MkdirAll(filepath.Join(v.root, internalVaultDir), v.dirMode); err != nil {
+		return err
+	}
+	temporary, err := os.MkdirTemp(filepath.Join(v.root, internalVaultDir), "folder-delete-")
+	if err != nil {
+		return err
+	}
 	settings, err := v.GetSettings()
 	if err != nil {
 		return err
 	}
-	_, err = v.SetSettings(VaultSettings{
-		PrimaryNotesLocation: settings.PrimaryNotesLocation,
-		DailyNotes:           settings.DailyNotes,
-		WeeklyNotes:          settings.WeeklyNotes,
-		MonthlyNotes:         settings.MonthlyNotes,
-		FolderIcons:          removeFolderIcons(settings.FolderIcons, folder, subpath),
-		FolderColors:         removeFolderColors(settings.FolderColors, folder, subpath),
-		// Favorites are carried through verbatim; the client prunes the deleted
-		// folder's favorites and re-persists them.
-		Favorites: settings.Favorites,
+	err = v.relocateFolderTrees([][2]string{{abs, filepath.Join(temporary, "content")}, {comments, filepath.Join(temporary, "comments")}}, func() error {
+		next := settings
+		next.FolderIcons = removeFolderIcons(settings.FolderIcons, folder, subpath)
+		next.FolderColors = removeFolderColors(settings.FolderColors, folder, subpath)
+		_, err := v.SetSettings(next)
+		return err
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	v.invalidateTextSearchCache()
+	// Cleanup cannot resurrect comments at a live note path.
+	if err := os.RemoveAll(temporary); err != nil {
+		log.Printf("folder cleanup pending: %v", err)
+	}
+	return nil
 }
 
 func (v *Vault) DuplicateFolder(folder NoteFolder, subpath string) (string, error) {
