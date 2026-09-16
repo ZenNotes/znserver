@@ -197,6 +197,17 @@ type Vault struct {
 	// first, settingsMu second, and never the reverse.
 	settingsMu    sync.Mutex
 	settingsCache *cachedVaultSettings
+	// pending counts delayed background writers, currently the note-meta
+	// cache snapshot, so Close can drain them before a caller removes the
+	// vault directory. Windows refuses to delete a directory a writer is
+	// still creating files in.
+	pending sync.WaitGroup
+}
+
+// Close waits for background writers such as the delayed note-meta cache
+// snapshot. The vault remains usable afterwards; Close only drains.
+func (v *Vault) Close() {
+	v.pending.Wait()
 }
 
 // cachedVaultSettings is a parsed vault.json plus the identity of the bytes it
@@ -1088,7 +1099,9 @@ func (v *Vault) persistNoteMetaCacheSnapshot(metas []NoteMeta) {
 	}
 	metas = append([]NoteMeta(nil), metas...)
 
+	v.pending.Add(1)
 	go func(metas []NoteMeta, generation uint64) {
+		defer v.pending.Done()
 		time.Sleep(time.Second)
 
 		entries := make([]persistedNoteMetaEntry, 0, len(metas))
