@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/ZenNotes/zennotes/apps/server/internal/vault"
+	"github.com/ZenNotes/znserver/internal/vault"
 )
 
 // Custom-template routes: the server half of Settings, Templates for the web

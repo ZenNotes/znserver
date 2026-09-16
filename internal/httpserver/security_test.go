@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ZenNotes/zennotes/apps/server/internal/config"
-	"github.com/ZenNotes/zennotes/apps/server/internal/vault"
+	"github.com/ZenNotes/znserver/internal/config"
+	"github.com/ZenNotes/znserver/internal/vault"
 )
 
 func newTestServer(t *testing.T, cfg config.Config) (*httptest.Server, *vault.Vault) {

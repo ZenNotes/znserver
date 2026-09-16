@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ZenNotes/zennotes/apps/server/internal/config"
+	"github.com/ZenNotes/znserver/internal/config"
 )
 
 const (

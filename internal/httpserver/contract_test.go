@@ -11,7 +11,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/ZenNotes/zennotes/apps/server/internal/config"
+	"github.com/ZenNotes/znserver/internal/config"
 )
 
 func TestSelfHostedHTTPContract(t *testing.T) {

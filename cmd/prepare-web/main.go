@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ZenNotes/zennotes/apps/server/internal/webartifact"
+	"github.com/ZenNotes/znserver/internal/webartifact"
 )
 
 func main() {

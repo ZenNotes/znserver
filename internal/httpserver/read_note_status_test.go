@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ZenNotes/zennotes/apps/server/internal/config"
+	"github.com/ZenNotes/znserver/internal/config"
 )
 
 // The three answers /api/notes/read can give about a path, which clients read

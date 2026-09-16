@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/ZenNotes/zennotes/apps/server/internal/config"
+	"github.com/ZenNotes/znserver/internal/config"
 )
 
 // corsHeaders returns what the middleware answers for a given Origin.

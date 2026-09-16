@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ZenNotes/zennotes/apps/server/internal/config"
+	"github.com/ZenNotes/znserver/internal/config"
 )
 
 // TestCreateExcalidrawEndpoint exercises the full HTTP wiring: log in, POST

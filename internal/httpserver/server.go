@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ZenNotes/zennotes/apps/server/internal/config"
-	"github.com/ZenNotes/zennotes/apps/server/internal/vault"
-	"github.com/ZenNotes/zennotes/apps/server/internal/watcher"
+	"github.com/ZenNotes/znserver/internal/config"
+	"github.com/ZenNotes/znserver/internal/vault"
+	"github.com/ZenNotes/znserver/internal/watcher"
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"

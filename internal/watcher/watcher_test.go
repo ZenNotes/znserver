@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ZenNotes/zennotes/apps/server/internal/vault"
+	"github.com/ZenNotes/znserver/internal/vault"
 	"github.com/fsnotify/fsnotify"
 )
 

@@ -1,4 +1,4 @@
-module github.com/ZenNotes/zennotes/apps/server
+module github.com/ZenNotes/znserver
 
 go 1.25
 

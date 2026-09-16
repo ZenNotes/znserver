@@ -10,8 +10,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/ZenNotes/zennotes/apps/server/internal/config"
-	"github.com/ZenNotes/zennotes/apps/server/internal/vault"
+	"github.com/ZenNotes/znserver/internal/config"
+	"github.com/ZenNotes/znserver/internal/vault"
 )
 
 func newBasePathServer(t *testing.T, basePath string) *httptest.Server {
