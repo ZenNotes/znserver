@@ -53,12 +53,23 @@ type WorkflowRunFileChange struct {
 	After  *string `json:"after"`
 }
 
+// WorkflowRunMove is one path op as the client planned it to land. The
+// changes name only notes; a note's comments live in .zennotes, which a
+// change may not name, so the server carries them for each move itself.
+type WorkflowRunMove struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
 type PreparedWorkflowRun struct {
 	WorkflowID   string                  `json:"workflowId"`
 	Ops          []json.RawMessage       `json:"ops"`
 	Applied      int                     `json:"applied"`
 	Irreversible int                     `json:"irreversible"`
 	Changes      []WorkflowRunFileChange `json:"changes"`
+	// Moves is absent from a client that predates it, which then gets what it
+	// always got: the Markdown moved, the comments left behind.
+	Moves []WorkflowRunMove `json:"moves,omitempty"`
 }
 
 type WorkflowRunReceipt struct {
@@ -108,10 +119,15 @@ type workflowRunLedger struct {
 	Ops          []json.RawMessage      `json:"ops"`
 	Journal      []workflowJournalEntry `json:"journal"`
 	Hashes       map[string]*string     `json:"hashes"`
-	Undone       bool                   `json:"undone"`
-	UndoneAt     int64                  `json:"undoneAt,omitempty"`
-	RolledBack   *WorkflowRollback      `json:"rolledBack,omitempty"`
-	Interrupted  *WorkflowRollback      `json:"interrupted,omitempty"`
+	// Sidecars sits beside Journal rather than in it: every reader of a ledger
+	// resolves each journal path as a note and would refuse a .zennotes one,
+	// failing the undo for good. Kept apart, an older reader skips them and
+	// still undoes the notes. See workflow_sidecars.go.
+	Sidecars    []workflowSidecarEntry `json:"sidecars,omitempty"`
+	Undone      bool                   `json:"undone"`
+	UndoneAt    int64                  `json:"undoneAt,omitempty"`
+	RolledBack  *WorkflowRollback      `json:"rolledBack,omitempty"`
+	Interrupted *WorkflowRollback      `json:"interrupted,omitempty"`
 }
 
 func workflowDir(root string) string {
@@ -573,7 +589,20 @@ func (v *Vault) ApplyPreparedWorkflow(input PreparedWorkflowRun) (WorkflowRunRec
 		resolved = append(resolved, abs)
 	}
 
+	moves, err := v.validateWorkflowMoves(input.Moves, seen)
+	if err != nil {
+		return WorkflowRunReceipt{}, err
+	}
 	runID := newWorkflowRunID(startedAt)
+	// Read, and refused if need be, before the ledger exists, so a refusal
+	// leaves no record: nothing happened.
+	sidecars, sidecarMoves, refusal, err := v.planWorkflowSidecarMoves(moves)
+	if err != nil {
+		return WorkflowRunReceipt{}, err
+	}
+	if refusal != "" {
+		return WorkflowRunReceipt{RunID: runID, WorkflowID: workflowID, StartedAt: startedAt, Paths: []string{}, Irreversible: input.Irreversible, RolledBack: &WorkflowRollback{Reason: refusal + " The run was rolled back; your vault is unchanged."}}, nil
+	}
 	ledger := workflowRunLedger{
 		Version:      workflowLedgerVersion,
 		RunID:        runID,
@@ -586,6 +615,7 @@ func (v *Vault) ApplyPreparedWorkflow(input PreparedWorkflowRun) (WorkflowRunRec
 		Ops:          input.Ops,
 		Journal:      journal,
 		Hashes:       map[string]*string{},
+		Sidecars:     sidecars,
 		Undone:       false,
 		Interrupted:  &WorkflowRollback{Reason: "ZenNotes stopped while this run was still applying, so part of it may have landed. Undo restores every file it had recorded."},
 	}
@@ -598,6 +628,26 @@ func (v *Vault) ApplyPreparedWorkflow(input PreparedWorkflowRun) (WorkflowRunRec
 		defer v.invalidateTextSearchCache()
 	}
 
+	// Unwind everything the run wrote and report it, whatever went wrong: a
+	// clean rollback leaves no ledger, an incomplete one is persisted and says
+	// so in as many words.
+	rollBack := func(cause error) (WorkflowRunReceipt, error) {
+		failures := v.restoreWorkflowRunLocked(journal, sidecars)
+		reason := fmt.Sprintf("%v. The run was rolled back; your vault is unchanged.", cause)
+		if len(failures) == 0 {
+			if abs, pathErr := v.resolveWorkflowLedgerPath(runID); pathErr == nil {
+				_ = os.Remove(abs)
+			}
+			return WorkflowRunReceipt{RunID: runID, WorkflowID: workflowID, StartedAt: startedAt, Paths: []string{}, Irreversible: input.Irreversible, RolledBack: &WorkflowRollback{Reason: reason}}, nil
+		}
+		reason = fmt.Sprintf("%v. ROLLBACK INCOMPLETE: %s", cause, workflowFailureMessage(failures))
+		ledger.FinishedAt = time.Now().UnixMilli()
+		ledger.RolledBack = &WorkflowRollback{Reason: reason}
+		ledger.Interrupted = nil
+		_ = v.writeWorkflowLedgerLocked(ledger)
+		return WorkflowRunReceipt{RunID: runID, WorkflowID: workflowID, StartedAt: startedAt, Paths: paths, Irreversible: input.Irreversible, RolledBack: &WorkflowRollback{Reason: reason}}, nil
+	}
+
 	for index, change := range input.Changes {
 		var err error
 		if change.After == nil {
@@ -608,32 +658,24 @@ func (v *Vault) ApplyPreparedWorkflow(input PreparedWorkflowRun) (WorkflowRunRec
 		} else {
 			err = writeFileAtomic(resolved[index], []byte(*change.After), v.fileMode, v.dirMode)
 		}
-		if err == nil {
-			continue
+		if err != nil {
+			return rollBack(err)
 		}
-		_, failures := v.restoreWorkflowJournalLocked(journal)
-		reason := fmt.Sprintf("%v. The run was rolled back; your vault is unchanged.", err)
-		if len(failures) == 0 {
-			if abs, pathErr := v.resolveWorkflowLedgerPath(runID); pathErr == nil {
-				_ = os.Remove(abs)
-			}
-			return WorkflowRunReceipt{RunID: runID, WorkflowID: workflowID, StartedAt: startedAt, Paths: []string{}, Irreversible: input.Irreversible, RolledBack: &WorkflowRollback{Reason: reason}}, nil
-		}
-		reason = fmt.Sprintf("%v. ROLLBACK INCOMPLETE: %s", err, workflowFailureMessage(failures))
-		ledger.FinishedAt = time.Now().UnixMilli()
-		ledger.RolledBack = &WorkflowRollback{Reason: reason}
-		ledger.Interrupted = nil
-		_ = v.writeWorkflowLedgerLocked(ledger)
-		return WorkflowRunReceipt{RunID: runID, WorkflowID: workflowID, StartedAt: startedAt, Paths: paths, Irreversible: input.Irreversible, RolledBack: &WorkflowRollback{Reason: reason}}, nil
+	}
+	// After the notes, so a note that could not be written is rolled back
+	// before any comments have moved.
+	if err := v.applyWorkflowSidecarMoves(sidecarMoves); err != nil {
+		return rollBack(err)
 	}
 
 	if len(input.Ops) > 0 {
 		ledger.FinishedAt = time.Now().UnixMilli()
 		ledger.Applied = input.Applied
 		ledger.Hashes = hashes
+		ledger.Sidecars = v.finishedSidecars(sidecars)
 		ledger.Interrupted = nil
 		if err := v.writeWorkflowLedgerLocked(ledger); err != nil {
-			_, failures := v.restoreWorkflowJournalLocked(journal)
+			failures := v.restoreWorkflowRunLocked(journal, sidecars)
 			if len(failures) == 0 {
 				if abs, pathErr := v.resolveWorkflowLedgerPath(runID); pathErr == nil {
 					_ = os.Remove(abs)
@@ -721,7 +763,11 @@ func (v *Vault) UndoWorkflowRun(runID string) (WorkflowUndoResult, error) {
 			}
 		}
 	}
+	drifted = append(drifted, v.driftedSidecarNotes(ledger.Sidecars, drifted)...)
 	restored, failures := v.restoreWorkflowJournalSnapshotLocked(ledger.Journal, liveByPath, absByPath)
+	// The sidecars after the notes; `restored` counts notes, the files the
+	// user knows about, as the desktop's does.
+	failures = append(failures, v.restoreWorkflowSidecarsLocked(ledger.Sidecars)...)
 	if len(failures) > 0 {
 		return WorkflowUndoResult{}, fmt.Errorf("undo of run %s is incomplete: %s", runID, workflowFailureMessage(failures))
 	}
