@@ -201,37 +201,64 @@ func TestPreparedWorkflowRejectsMoveOutsideItsChanges(t *testing.T) {
 }
 
 func TestPreparedWorkflowRollsBackWhenCommentsCannotMove(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("a read-only folder does not bind root")
-	}
 	v, root := workflowTestVault(t)
+	bodyA, bodyB := "# A\n", "# B\n"
+	commentsB := strings.ReplaceAll(testComments, "inbox/A.md", "inbox/B.md")
+	if err := os.WriteFile(filepath.Join(root, "inbox", "B.md"), []byte(bodyB), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	writeSidecar(t, commentsFile(root, "inbox/A.md"), testComments)
-	// A destination comments folder nothing can be moved into: the note moves,
-	// its comments cannot, and the whole run has to come back.
-	locked := filepath.Join(root, ".zennotes", "comments", "archive")
-	if err := os.MkdirAll(locked, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(locked, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	writeSidecar(t, commentsFile(root, "inbox/B.md"), commentsB)
+	// A clash the run makes itself: A's comments land at
+	// archive/A.md.comments.json, the path B's comments need as a folder,
+	// since B moves into a note folder of that name. The plan reads the disk
+	// before anything moves and cannot see it, so B's comments fail only after
+	// both notes and A's comments have landed, and all of it has to come back.
+	// Staged beforehand, the same file fails the plan's read on Linux and
+	// macOS instead, and a read-only folder binds neither Windows nor root.
+	clashing := "archive/A.md.comments.json/B.md"
 
-	receipt, err := v.ApplyPreparedWorkflow(archiveRun(t))
+	receipt, err := v.ApplyPreparedWorkflow(PreparedWorkflowRun{
+		WorkflowID: "clash",
+		Ops: []json.RawMessage{
+			rawWorkflowOp(t, map[string]any{"kind": "archive", "path": "inbox/A.md"}),
+			rawWorkflowOp(t, map[string]any{"kind": "move", "path": "inbox/B.md", "to": "archive/A.md.comments.json"}),
+		},
+		Applied: 2,
+		Changes: []WorkflowRunFileChange{
+			{Path: "inbox/A.md", Before: &bodyA, After: nil},
+			{Path: "archive/A.md", Before: nil, After: &bodyA},
+			{Path: "inbox/B.md", Before: &bodyB, After: nil},
+			{Path: clashing, Before: nil, After: &bodyB},
+		},
+		Moves: []WorkflowRunMove{
+			{From: "inbox/A.md", To: "archive/A.md"},
+			{From: "inbox/B.md", To: clashing},
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if receipt.RolledBack == nil || !strings.Contains(receipt.RolledBack.Reason, "your vault is unchanged") {
 		t.Fatalf("receipt = %+v", receipt)
 	}
-	if got, ok := readOrMissing(t, filepath.Join(root, "inbox", "A.md")); !ok || got != "# A\n" {
-		t.Fatal("the note was not put back")
+	for note, body := range map[string]string{"inbox/A.md": bodyA, "inbox/B.md": bodyB} {
+		if got, ok := readOrMissing(t, filepath.Join(root, filepath.FromSlash(note))); !ok || got != body {
+			t.Fatalf("%s was not put back", note)
+		}
 	}
-	if _, ok := readOrMissing(t, filepath.Join(root, "archive", "A.md")); ok {
-		t.Fatal("the moved note was left at the destination")
+	for _, note := range []string{"archive/A.md", clashing} {
+		if _, ok := readOrMissing(t, filepath.Join(root, filepath.FromSlash(note))); ok {
+			t.Fatalf("the moved note was left at %s", note)
+		}
 	}
-	if got, ok := readOrMissing(t, commentsFile(root, "inbox/A.md")); !ok || got != testComments {
-		t.Fatal("the comments were not left where they were")
+	for note, comments := range map[string]string{"inbox/A.md": testComments, "inbox/B.md": commentsB} {
+		if got, ok := readOrMissing(t, commentsFile(root, note)); !ok || got != comments {
+			t.Fatalf("the comments of %s did not come back", note)
+		}
+	}
+	if _, ok := readOrMissing(t, commentsFile(root, "archive/A.md")); ok {
+		t.Fatal("A's comments were left at the destination")
 	}
 	if runs, err := v.ListWorkflowRuns(); err != nil || len(runs) != 0 {
 		t.Fatalf("a clean rollback left a record: %v %+v", err, runs)
