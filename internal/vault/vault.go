@@ -2310,6 +2310,8 @@ func (v *Vault) relocateFolderTrees(moves [][2]string, persistSettings func() er
 		for i := len(moved) - 1; i >= 0; i-- {
 			if err := os.Rename(moved[i][1], moved[i][0]); err != nil {
 				failures = append(failures, err)
+			} else if err := rebaseMovedLink(moved[i][1], moved[i][0]); err != nil {
+				failures = append(failures, err)
 			}
 		}
 		if len(failures) > 1 {
@@ -2325,6 +2327,10 @@ func (v *Vault) relocateFolderTrees(moves [][2]string, persistSettings func() er
 			return rollback(err)
 		}
 		moved = append(moved, move)
+		// A relative link keeps pointing where it did (see rebaseMovedLink).
+		if err := rebaseMovedLink(move[0], move[1]); err != nil {
+			return rollback(err)
+		}
 	}
 	if err := persistSettings(); err != nil {
 		return rollback(err)
