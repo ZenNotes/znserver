@@ -18,8 +18,8 @@ plain Markdown files in a directory you own.
 - **Small footprint.** Static Go binary, no runtime dependencies. The Docker
   image is built `FROM scratch` and runs as a non-root user.
 
-Prebuilt binaries cover Linux, macOS, and Windows on amd64 and arm64. The Docker
-image is published for `linux/amd64` and `linux/arm64`.
+Prebuilt binaries cover Linux and macOS on amd64 and arm64, and Windows on
+amd64. The Docker image is published for `linux/amd64` and `linux/arm64`.
 
 ## Contents
 
@@ -409,19 +409,104 @@ in the main repository.
 
 ## Upgrading and rolling back
 
-Notes are plain files and there are no vault migrations. Upgrading and rolling
-back both mean running a different server version against the same directory.
+Notes are plain files and there are no vault migrations, so upgrading means
+running a newer server against the same vault and data directories, and rolling
+back means running the older one again. Each server release pins one browser
+bundle, so upgrading the server upgrades the web app with it.
 
-- **Docker:** change the image tag, then `docker compose pull && docker compose up -d`.
-- **Binary:** replace the file in `/usr/local/bin` and restart the service.
-- **Roll back:** run the previous tag or binary. Nothing in the vault needs to
-  be undone.
+The server does not check for updates itself. New versions are published on the
+[releases page](https://github.com/ZenNotes/znserver/releases). To be told about
+them, choose **Watch → Custom → Releases** on the GitHub repository.
 
-The server logs its version first on startup, as `ZenNotes Server: vX.Y.Z`,
-so you can confirm which release is running after an upgrade or rollback.
+### Upgrade with Docker Compose
 
-Each server release pins one browser bundle, so upgrading the server upgrades
-the web app with it.
+```sh
+docker compose pull
+docker compose up -d
+```
+
+`pull` fetches whatever your `image:` tag now points to, and `up -d` recreates
+the container only if the image changed. A minor tag such as `2.51` moves to
+each new patch of that minor, so these two commands are the whole upgrade. To
+move to a newer minor, or off an exact tag such as `2.51.0`, change `image:` in
+your Compose file first. [Image tags](#image-tags) lists what each tag follows.
+
+### Upgrade a `docker run` container
+
+A container keeps the image it was created with, so pull the new image and
+replace the container:
+
+```sh
+docker pull adibhanna/zennotes:2.51   # your tag, or a newer one
+docker stop zennotes
+docker rm zennotes
+```
+
+Then run the `docker run` command from [step 2](#2-run-the-container) again,
+with the new tag if you changed it. The vault, the server config, and saved
+sessions live in the mounted directories, so replacing the container loses
+nothing.
+
+### Upgrade a prebuilt binary
+
+Download and verify the new release with the commands under
+[Prebuilt binary](#prebuilt-binary), with `VERSION` set to the new release. Then
+install it over the old file and restart the server. For the systemd service on
+Linux:
+
+```sh
+sudo install -m 0755 "zennotes-server-linux-${ARCH}" /usr/local/bin/zennotes-server
+sudo systemctl restart zennotes
+```
+
+On macOS, install `zennotes-server-darwin-${ARCH}` the same way, then restart
+the server however you run it. On Windows, stop the server first, since a
+running `.exe` cannot be replaced, then put the new `zennotes-server.exe` in
+place of the old one and start it again.
+
+### Upgrade a source or Nix build
+
+Check out the release you want:
+
+```sh
+git fetch --tags
+git checkout vX.Y.Z   # the release to run
+```
+
+Then repeat the build under [Build from source](#build-from-source), or run
+`nix-build`, and restart the server. An API-only `go install …@latest` build
+follows `main`, not releases. Run the same `go install` command again to
+update it.
+
+### Check the running version
+
+Published Docker images carry their version in a label. Ask the container
+rather than the tag, since a container runs the image it was created with until
+it is replaced:
+
+```sh
+docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' zennotes
+```
+
+With Compose, use `$(docker compose ps -q zennotes)` in place of `zennotes`.
+Images you build yourself carry no version label.
+
+The server also logs its version first on startup, as `ZenNotes Server: vX.Y.Z`
+(see `docker compose logs zennotes` or `journalctl -u zennotes`), and reports it
+without a token at `/api/version`, after your base path if you set one:
+
+```sh
+curl http://127.0.0.1:7878/api/version
+```
+
+Older servers log no version line and answer `0.1.0-web` there. A build from
+`main` between releases reports the most recent release, not its own commit.
+
+### Roll back
+
+Run the previous version the same way you upgraded: its exact image tag, such
+as `2.51.0`, in your Compose file or `docker run` command, or its release
+binary. Nothing in the vault needs to be undone.
 
 ## Development
 
@@ -487,6 +572,9 @@ server commit plus the browser manifest it pins. To ship one:
    `main`) to push the multi-arch image to Docker Hub with the version, minor,
    and `latest` tags. Its environment gate asks a reviewer to approve the push.
    Run from a branch, only the optional extra tag is published.
+6. Once both are out, point this README's install commands at the new release:
+   `VERSION` in the binary instructions and, when the minor changed, the image
+   tags in the Docker examples.
 
 ## License
 
