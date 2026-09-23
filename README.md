@@ -65,7 +65,7 @@ docker run -d --name zennotes \
   -v "$HOME/ZenNotes/auth-token:/run/secrets/zennotes_auth_token:ro" \
   -e ZENNOTES_AUTH_TOKEN_FILE=/run/secrets/zennotes_auth_token \
   -e ZENNOTES_PERSIST_SESSIONS=1 \
-  adibhanna/zennotes:2.51
+  adibhanna/zennotes:2.55
 ```
 
 Then open <http://localhost:7878> and paste the token from
@@ -89,7 +89,7 @@ Why these flags:
 ```yaml
 services:
   zennotes:
-    image: adibhanna/zennotes:2.51
+    image: adibhanna/zennotes:2.55
     restart: unless-stopped
     user: "1000:1000"            # your uid:gid, see `id -u` / `id -g`
     ports:
@@ -123,8 +123,8 @@ inside it. Probe `GET /healthz` from the host instead. It returns
 
 | Tag | Meaning |
 | --- | --- |
-| `2.51.0` | Exact release. Pin this in production. |
-| `2.51` | Latest patch of that minor. |
+| `2.55.0` | Exact release. Pin this in production. |
+| `2.55` | Latest patch of that minor. |
 | `latest` | Latest release. |
 
 ### Build the image yourself
@@ -155,7 +155,7 @@ binaries plus a `SHA256SUMS` file:
 **Linux**
 
 ```sh
-VERSION=2.51.0
+VERSION=2.55.0
 ARCH=amd64   # or arm64
 BASE="https://github.com/ZenNotes/znserver/releases/download/v${VERSION}"
 
@@ -170,7 +170,7 @@ sudo install -m 0755 "zennotes-server-linux-${ARCH}" /usr/local/bin/zennotes-ser
 **macOS**
 
 ```sh
-VERSION=2.51.0
+VERSION=2.55.0
 ARCH=arm64   # or amd64 on Intel Macs
 BASE="https://github.com/ZenNotes/znserver/releases/download/v${VERSION}"
 
@@ -189,7 +189,7 @@ flag with `xattr -d com.apple.quarantine <file>`.
 **Windows** (PowerShell)
 
 ```powershell
-$Version = "2.51.0"
+$Version = "2.55.0"
 $Base = "https://github.com/ZenNotes/znserver/releases/download/v$Version"
 Invoke-WebRequest "$Base/zennotes-server-windows-amd64.exe" -OutFile zennotes-server.exe
 Invoke-WebRequest "$Base/SHA256SUMS" -OutFile SHA256SUMS
