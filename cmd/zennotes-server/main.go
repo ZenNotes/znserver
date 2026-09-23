@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ZenNotes/znserver"
 	"github.com/ZenNotes/znserver/internal/config"
 	"github.com/ZenNotes/znserver/internal/httpserver"
 	"github.com/ZenNotes/znserver/internal/vault"
@@ -22,6 +23,8 @@ import (
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	// First, so a bug report carries the version even when startup fails below.
+	log.Printf("ZenNotes Server: v%s", znserver.Version())
 
 	cfg := config.Load()
 	if strings.TrimSpace(cfg.AuthToken) == "" && !cfg.AllowInsecureNoAuth && !bindIsLoopback(cfg.Bind) {

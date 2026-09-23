@@ -417,6 +417,9 @@ back both mean running a different server version against the same directory.
 - **Roll back:** run the previous tag or binary. Nothing in the vault needs to
   be undone.
 
+The server logs its version first on startup, as `ZenNotes Server: vX.Y.Z`,
+so you can confirm which release is running after an upgrade or rollback.
+
 Each server release pins one browser bundle, so upgrading the server upgrades
 the web app with it.
 
