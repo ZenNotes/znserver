@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ZenNotes/znserver"
 	"github.com/ZenNotes/znserver/internal/config"
 	"github.com/ZenNotes/znserver/internal/vault"
 	"github.com/ZenNotes/znserver/internal/watcher"
@@ -392,7 +393,7 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version": "0.1.0-web",
+		"version": znserver.Version(),
 		"go":      runtime.Version(),
 	})
 }
@@ -400,7 +401,9 @@ func (s *Server) version(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 	cfg := s.currentConfig()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":                   "0.1.0-web",
+		// The release this binary was built from, which clients print in bug
+		// reports (`:version` and Settings' version details).
+		"version":                   znserver.Version(),
 		"platform":                  platformName(),
 		"authRequired":              strings.TrimSpace(cfg.AuthToken) != "",
 		"supportsSessionLogin":      true,
