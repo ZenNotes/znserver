@@ -322,8 +322,15 @@ func (v *Vault) Root() string {
 	return v.root
 }
 
+// Info describes the vault as the clients name it: its display name from
+// vault.json when it has one (#692), else the folder name. Reads through the
+// settings cache, so it costs one stat once the file has been parsed.
 func (v *Vault) Info() VaultInfo {
-	return VaultInfo{Root: v.root, Name: filepath.Base(v.root)}
+	name := filepath.Base(v.root)
+	if settings, err := v.GetSettings(); err == nil {
+		name = resolveVaultName(settings, v.root)
+	}
+	return VaultInfo{Root: v.root, Name: name}
 }
 
 func cloneSettings(settings VaultSettings) VaultSettings {
@@ -375,6 +382,7 @@ func cloneSettings(settings VaultSettings) VaultSettings {
 	monthlyLegacyPatterns := make([]DateNotePatternSettings, len(settings.MonthlyNotes.LegacyPatterns))
 	copy(monthlyLegacyPatterns, settings.MonthlyNotes.LegacyPatterns)
 	return VaultSettings{
+		DisplayName:          settings.DisplayName,
 		PrimaryNotesLocation: settings.PrimaryNotesLocation,
 		DailyNotes: DailyNotesSettings{
 			Enabled:                 settings.DailyNotes.Enabled,
@@ -573,6 +581,7 @@ func normalizeVaultSettings(value VaultSettings, fallbackPrimary PrimaryNotesLoc
 		folderColors[key] = value
 	}
 	return VaultSettings{
+		DisplayName: normalizeVaultDisplayName(value.DisplayName),
 		PrimaryNotesLocation: normalizePrimaryNotesLocation(func() PrimaryNotesLocation {
 			if value.PrimaryNotesLocation == "" {
 				return fallbackPrimary

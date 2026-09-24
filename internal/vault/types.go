@@ -265,6 +265,12 @@ type FileLocationSetting struct {
 }
 
 type VaultSettings struct {
+	// DisplayName is what the clients call the vault (#692): the sidebar
+	// header, the vault switcher, the title bar. Mirrors shared/ipc.ts
+	// VaultSettings.displayName; absent means the folder's own name. A
+	// first-class field for the same round-trip reason as Tasks below, and
+	// what Info() answers with when it is set.
+	DisplayName          string                  `json:"displayName,omitempty"`
 	PrimaryNotesLocation PrimaryNotesLocation    `json:"primaryNotesLocation"`
 	DailyNotes           DailyNotesSettings      `json:"dailyNotes"`
 	WeeklyNotes          WeeklyNotesSettings     `json:"weeklyNotes"`
