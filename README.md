@@ -123,7 +123,7 @@ inside it. Probe `GET /healthz` from the host instead. It returns
 
 | Tag | Meaning |
 | --- | --- |
-| `2.60.0` | Exact release. Pin this in production. |
+| `2.60.1` | Exact release. Pin this in production. |
 | `2.60` | Latest patch of that minor. |
 | `latest` | Latest release. |
 
@@ -155,7 +155,7 @@ binaries plus a `SHA256SUMS` file:
 **Linux**
 
 ```sh
-VERSION=2.60.0
+VERSION=2.60.1
 ARCH=amd64   # or arm64
 BASE="https://github.com/ZenNotes/znserver/releases/download/v${VERSION}"
 
@@ -170,7 +170,7 @@ sudo install -m 0755 "zennotes-server-linux-${ARCH}" /usr/local/bin/zennotes-ser
 **macOS**
 
 ```sh
-VERSION=2.60.0
+VERSION=2.60.1
 ARCH=arm64   # or amd64 on Intel Macs
 BASE="https://github.com/ZenNotes/znserver/releases/download/v${VERSION}"
 
@@ -189,7 +189,7 @@ flag with `xattr -d com.apple.quarantine <file>`.
 **Windows** (PowerShell)
 
 ```powershell
-$Version = "2.60.0"
+$Version = "2.60.1"
 $Base = "https://github.com/ZenNotes/znserver/releases/download/v$Version"
 Invoke-WebRequest "$Base/zennotes-server-windows-amd64.exe" -OutFile zennotes-server.exe
 Invoke-WebRequest "$Base/SHA256SUMS" -OutFile SHA256SUMS
