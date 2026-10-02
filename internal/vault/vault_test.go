@@ -143,6 +143,30 @@ func TestImportAssetEmbedsImagesByVaultRelativeWikilink(t *testing.T) {
 	}
 }
 
+// Media embeds so the note shows a player or the document in place, the same
+// rule the desktop and both phones follow; any other file stays a link.
+func TestImportAssetEmbedsMediaAndLinksOtherFiles(t *testing.T) {
+	root := t.TempDir()
+	v, err := New(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, kind, markdown string }{
+		{"Clip.mov", "video", "![[assets/Clip.mov]]"},
+		{"Talk.mp3", "audio", "![[assets/Talk.mp3]]"},
+		{"Year end.pdf", "pdf", "![[assets/Year end.pdf]]"},
+		{"Archive.zip", "file", "[Archive.zip](<assets/Archive.zip>)"},
+	} {
+		asset, err := v.ImportAsset("Note.md", tc.name, bytes.NewReader([]byte{1, 2, 3}))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if asset.Kind != tc.kind || asset.Markdown != tc.markdown {
+			t.Fatalf("%s: kind %q markdown %q, want %q %q", tc.name, asset.Kind, asset.Markdown, tc.kind, tc.markdown)
+		}
+	}
+}
+
 func TestImportAssetScrubsNamesThatBreakWikilinks(t *testing.T) {
 	root := t.TempDir()
 	v, err := New(root, Options{})

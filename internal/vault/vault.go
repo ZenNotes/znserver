@@ -3051,12 +3051,15 @@ func cleanAssetFilename(name string) (string, error) {
 }
 
 // makeAssetMarkdown mirrors the desktop markdownForImportedAsset: everything is
-// linked by VAULT-relative path, an image as a wikilink and anything else as a
-// markdown link, which is the single form every client now writes. The link
-// used to be relative to the note, so it broke as soon as the note moved to
-// another depth (nothing rewrites relative asset paths on move).
+// linked by VAULT-relative path, an image, PDF, audio or video file as an embed
+// the note shows in place (a picture, a document, a player) and anything else
+// as a markdown link, which is the single form every client now writes. The
+// link used to be relative to the note, so it broke as soon as the note moved
+// to another depth (nothing rewrites relative asset paths on move), and media
+// used to be a bare link, so an attached video showed only its file name.
 func makeAssetMarkdown(vaultRelPath, kind, name string) string {
-	if kind == "image" {
+	switch kind {
+	case "image", "pdf", "audio", "video":
 		return "![[" + vaultRelPath + "]]"
 	}
 	dest := "<" + strings.ReplaceAll(vaultRelPath, ">", "%3E") + ">"
