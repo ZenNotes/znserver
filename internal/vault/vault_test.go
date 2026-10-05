@@ -1172,6 +1172,53 @@ func TestCreateExcalidrawSeedsEmptyScene(t *testing.T) {
 	}
 }
 
+func TestListAssetsIncludesFilesReachedThroughSymlinks(t *testing.T) {
+	root := t.TempDir()
+	v, err := New(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := filepath.Join(root, "assets")
+	if err := os.MkdirAll(assets, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(assets, "original.mp4"), []byte("123"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.mp4")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	links := map[string]string{
+		"clip.mp4":    filepath.Join(assets, "original.mp4"),
+		"escape.mp4":  outside,
+		"gone.mp4":    filepath.Join(assets, "missing.mp4"),
+		"folder.link": assets,
+	}
+	for name, target := range links {
+		if err := os.Symlink(target, filepath.Join(assets, name)); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+
+	listed, err := v.ListAssets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sizes := map[string]int64{}
+	for _, asset := range listed {
+		sizes[asset.Path] = asset.Size
+	}
+	if size, ok := sizes["assets/clip.mp4"]; !ok || size != 3 {
+		t.Errorf("assets/clip.mp4 listed=%v size=%d, want listed with the target's size 3", ok, size)
+	}
+	for _, path := range []string{"assets/escape.mp4", "assets/gone.mp4", "assets/folder.link"} {
+		if _, ok := sizes[path]; ok {
+			t.Errorf("%s is listed, want it left out", path)
+		}
+	}
+}
+
 func TestListAssetsIgnoresAtomicWriteScratchFiles(t *testing.T) {
 	root := t.TempDir()
 	v, err := New(root, Options{})

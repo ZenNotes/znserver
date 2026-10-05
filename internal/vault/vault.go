@@ -1415,7 +1415,8 @@ func (v *Vault) ListAssets() ([]AssetMeta, error) {
 				}
 				continue
 			}
-			if !entry.Type().IsRegular() || strings.EqualFold(filepath.Ext(name), ".md") || isExcalidrawName(name) {
+			isLink := entry.Type()&os.ModeSymlink != 0
+			if (!entry.Type().IsRegular() && !isLink) || strings.EqualFold(filepath.Ext(name), ".md") || isExcalidrawName(name) {
 				continue
 			}
 			info, err := entry.Info()
@@ -1425,6 +1426,20 @@ func (v *Vault) ListAssets() ([]AssetMeta, error) {
 			rel, err := filepath.Rel(v.root, full)
 			if err != nil {
 				continue
+			}
+			if isLink {
+				// A link to a file inside the vault is an attachment like any
+				// other: asset requests serve it through SafeJoin, and the web
+				// app calls an embed missing from this list "not on this
+				// device". A link that escapes the vault is refused there, so
+				// it is left out here too, as is a broken one or one to a
+				// folder.
+				if _, err := SafeJoin(v.root, filepath.ToSlash(rel)); err != nil {
+					continue
+				}
+				if info, err = os.Stat(full); err != nil || !info.Mode().IsRegular() {
+					continue
+				}
 			}
 			out = append(out, AssetMeta{
 				Path:         filepath.ToSlash(rel),
