@@ -292,8 +292,11 @@ func localAssetTargetKind(target string) string {
 
 // --- Task parsing (mirrors shared/tasks.ts parseTasksFromBody) ---
 
+// taskLineRe is the app's TASK_LINE_RE (@shared/tasklists): bullets, numbered
+// lists (`1.` and `1)`) and quoted tasks (`> - [ ]`), so the web app's Tasks
+// view lists what the desktop lists. Group 3 starts at the `]`.
 var (
-	taskLineRe      = regexp.MustCompile(`^(\s*(?:[-*+]|\d+\.)\s+)\[( |x|X|>|-|/)\](.*)$`)
+	taskLineRe      = regexp.MustCompile(`^(\s*(?:>\s*)*(?:[-+*]|\d+[.)])\s+\[)( |x|X|>|-|/)(\].*)$`)
 	inlineDueRe     = regexp.MustCompile(`(?i)(?:^|\s)due:\s*(\S+)`)
 	inlinePriority  = regexp.MustCompile(`(?i)(?:^|\s)!(high|med|medium|low|h|m|l)\b`)
 	inlineWaitingRe = regexp.MustCompile(`(?i)(?:^|\s)@waiting\b`)

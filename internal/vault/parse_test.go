@@ -119,6 +119,26 @@ func TestExtractTagsUnicode(t *testing.T) {
 }
 
 // #450: `[-]` cancelled tasks must be parsed (not dropped) and flagged cancelled.
+// The desktop's Tasks view, its MCP server and zn read these lines the same
+// way (zennotes apps/desktop/src/mcp/vault-ops.test.ts, tui
+// TestCLIDialectReadsEveryTaskShape); the web app's Tasks view did not list
+// numbered `1)` or quoted tasks before 2.69.1.
+func TestParseTasksReadsEveryTaskShape(t *testing.T) {
+	body := "- [ ] bullet\n1. [ ] ordered\n2) [x] ordered done\n> - [ ] quoted\n> > 3. [/] deeply quoted\n-[ ] not a task\ntext [ ] not a task\n"
+	tasks := ParseTasks("inbox/Shapes.md", "Shapes", FolderInbox, body)
+	var got []string
+	for _, tk := range tasks {
+		got = append(got, tk.Content)
+	}
+	want := []string{"bullet", "ordered", "ordered done", "quoted", "deeply quoted"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("tasks = %q, want %q", got, want)
+	}
+	if !tasks[2].Checked || !tasks[4].InProgress || tasks[3].TaskIndex != 3 {
+		t.Fatalf("states: ordered done checked=%v, deeply quoted in progress=%v, quoted index=%d", tasks[2].Checked, tasks[4].InProgress, tasks[3].TaskIndex)
+	}
+}
+
 func TestParseTasksRecognizesCancelled(t *testing.T) {
 	body := "- [ ] open\n- [x] done\n- [>] gone\n- [-] scrapped\n"
 	tasks := ParseTasks("inbox/t.md", "t", FolderInbox, body)
