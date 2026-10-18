@@ -100,3 +100,23 @@ func contains(list []string, s string) bool {
 	}
 	return false
 }
+
+func TestRemoveDemoTourLeavesNoTourFolder(t *testing.T) {
+	root := t.TempDir()
+	v, err := New(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.GenerateDemoTour(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "inbox", "demo", "Reading List.base", "data.csv")); err != nil {
+		t.Fatalf("the sample database was not written: %v", err)
+	}
+	if _, err := v.RemoveDemoTour(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "inbox", "demo")); !os.IsNotExist(err) {
+		t.Errorf("the tour folder is still there (err %v)", err)
+	}
+}

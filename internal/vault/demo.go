@@ -158,6 +158,9 @@ func (v *Vault) RemoveDemoTour() (DemoTourResult, error) {
 		}
 		if err := os.Remove(abs); err == nil {
 			result.AssetPaths = append(result.AssetPaths, filepath.ToSlash(asset.Path))
+			// The sample database ships as a folder of its own
+			// (`Reading List.base`), which has to go before the tour folder can.
+			removedDirs[filepath.Dir(abs)] = true
 		}
 	}
 	for dir := range removedDirs {
