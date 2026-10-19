@@ -359,7 +359,12 @@ func cloneSettings(settings VaultSettings) VaultSettings {
 	if settings.Tasks != nil {
 		excluded := make([]string, len(settings.Tasks.ExcludedFolders))
 		copy(excluded, settings.Tasks.ExcludedFolders)
-		tasks = &TasksSettings{ExcludedFolders: excluded}
+		var included []string
+		if len(settings.Tasks.IncludedFolders) > 0 {
+			included = make([]string, len(settings.Tasks.IncludedFolders))
+			copy(included, settings.Tasks.IncludedFolders)
+		}
+		tasks = &TasksSettings{ExcludedFolders: excluded, IncludedFolders: included}
 	}
 	// The same rule for the two later pointer fields: a caller reading the
 	// value SetSettings hands back must see what was written, not nil.
@@ -2400,10 +2405,14 @@ func (v *Vault) RenameFolder(folder NoteFolder, oldSub, newSub string) (string, 
 	if err != nil {
 		return "", err
 	}
+	oldVaultRel, _ := filepath.Rel(v.root, oldAbs)
+	newVaultRel, _ := filepath.Rel(v.root, newAbs)
 	err = v.relocateFolderTrees([][2]string{{oldAbs, newAbs}, {oldComments, newComments}}, func() error {
 		next := settings
 		next.FolderIcons = rewriteFolderIconsForRename(settings.FolderIcons, folder, oldSub, newSub)
 		next.FolderColors = rewriteFolderColorsForRename(settings.FolderColors, folder, oldSub, newSub)
+		// The Tasks folder lists name on-disk paths, so they follow the folder.
+		next.Tasks = rewriteTasksFoldersForRename(settings.Tasks, filepath.ToSlash(oldVaultRel), filepath.ToSlash(newVaultRel))
 		_, err := v.SetSettings(next)
 		return err
 	})
@@ -2510,8 +2519,8 @@ func (v *Vault) ScanTasks() ([]Task, error) {
 }
 
 // ScanTasksWith is ScanTasks honoring options: IncludeExcluded scans past
-// both the vault-level excluded-folders list and the note-level frontmatter
-// `tasks:` opt-out (#458).
+// the vault-level folder lists (the excluded folders and the Task folders,
+// #962) and the note-level frontmatter `tasks:` opt-out (#458).
 func (v *Vault) ScanTasksWith(opts ParseTasksOptions) ([]Task, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -2520,8 +2529,10 @@ func (v *Vault) ScanTasksWith(opts ParseTasksOptions) ([]Task, error) {
 		return nil, err
 	}
 	excluded := tasksExcludedFolders(settings)
+	included := tasksIncludedFolders(settings)
 	if opts.IncludeExcluded {
 		excluded = nil
+		included = nil
 	}
 	hiddenRootNames := hiddenPrimaryRootNames(settings)
 	all := []Task{}
@@ -2564,13 +2575,15 @@ func (v *Vault) ScanTasksWith(opts ParseTasksOptions) ([]Task, error) {
 			if !strings.EqualFold(filepath.Ext(d.Name()), ".md") {
 				return nil
 			}
-			body, err := os.ReadFile(path)
-			if err != nil {
-				return nil
-			}
 			rel, _ := filepath.Rel(v.root, path)
 			relPosix := filepath.ToSlash(rel)
-			if isPathExcludedFromTasks(relPosix, excluded) {
+			// Before the read: with Task folders set, most of a vault is
+			// outside them and never needs opening.
+			if isPathExcludedFromTasks(relPosix, excluded, included) {
+				return nil
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
 				return nil
 			}
 			title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
@@ -2604,8 +2617,8 @@ func (v *Vault) ScanTasksForPathWith(rel string, opts ParseTasksOptions) ([]Task
 	// Same gates as the full scan, or a single-note rescan would resurrect
 	// tasks the walker skips: trashed and unclassifiable notes contribute
 	// nothing (mirrors the desktop's LIVE_FOLDERS check), and neither do notes
-	// under an excluded folder (#458). The caller uses the empty result to
-	// drop stale rows.
+	// under an excluded folder (#458) or outside the Task folders (#962). The
+	// caller uses the empty result to drop stale rows.
 	folder, ok := v.folderOf(abs)
 	if !ok || folder == FolderTrash {
 		return []Task{}, nil
@@ -2616,7 +2629,7 @@ func (v *Vault) ScanTasksForPathWith(rel string, opts ParseTasksOptions) ([]Task
 		if err != nil {
 			return nil, err
 		}
-		if isPathExcludedFromTasks(relPosix, tasksExcludedFolders(settings)) {
+		if isPathExcludedFromTasks(relPosix, tasksExcludedFolders(settings), tasksIncludedFolders(settings)) {
 			return []Task{}, nil
 		}
 	}

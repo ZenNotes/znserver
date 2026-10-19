@@ -311,11 +311,17 @@ type HarperSettings struct {
 	IgnoredLints []string `json:"ignoredLints"`
 }
 
-// TasksSettings mirrors shared/ipc.ts VaultSettings.tasks (#458).
+// TasksSettings mirrors shared/ipc.ts VaultSettings.tasks (#458, #962).
+// A new field here also needs normalizeTasksSettings and cloneSettings, or
+// GetSettings hands it back stripped.
 type TasksSettings struct {
 	// ExcludedFolders lists vault-relative directory paths (as they exist on
 	// disk) whose notes never feed the Tasks surfaces.
 	ExcludedFolders []string `json:"excludedFolders,omitempty"`
+	// IncludedFolders, the Task folders (#962), narrows Tasks to the notes
+	// inside the folders it lists. Empty means the whole vault, and
+	// ExcludedFolders still applies inside them.
+	IncludedFolders []string `json:"includedFolders,omitempty"`
 }
 
 // TypstPreambleSettings mirrors shared/ipc.ts VaultSettings.typstPreambles
