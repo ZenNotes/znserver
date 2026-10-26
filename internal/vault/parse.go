@@ -82,8 +82,12 @@ var attachmentExts = map[string]bool{
 // indentation-tolerant: a fence nested under a list item is still a code block,
 // so its contents (e.g. a C "#include" line) must not be scanned. A
 // column-0-anchored regex missed indented fences and leaked them as tags (#293).
-// Mirrors stripCodeContent in apps/desktop/src/main/vault.ts and
-// packages/app-core/src/lib/tags.ts — keep the three in sync.
+// Mirrors stripCodeContent in ZenNotes/zennotes: apps/desktop/src/main/vault.ts,
+// apps/desktop/src/mcp/vault-ops.ts, packages/shared-domain/src/tag-scan.ts and
+// packages/app-core/src/lib/wikilinks.ts. Keep all five in sync. The TypeScript
+// copies need a `\r?` before `$` because JavaScript's `.` never matches "\r";
+// RE2's `.` does, so a CRLF fence line matches fenceLineRe as written and
+// TrimSpace drops the "\r" from a closing fence's rest.
 func stripCodeContent(body string) string {
 	if !strings.Contains(body, "`") && !strings.Contains(body, "~") {
 		return body

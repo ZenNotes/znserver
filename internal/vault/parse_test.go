@@ -72,6 +72,21 @@ func TestExtractTagsIgnoresIndentedFence(t *testing.T) {
 	}
 }
 
+// A note saved with CRLF line endings still ends every line in "\r" after the
+// split at "\n". The TypeScript copies missed those fences and indexed the code.
+func TestExtractTagsAndLinksIgnoreFenceInCRLFNote(t *testing.T) {
+	body := "# Notes\r\n\r\n```c\r\n#include <stdio.h>\r\n// [[Secret Note]]\r\n```\r\n\r\n#realtag [[Real Link]]\r\n"
+
+	tags := ExtractTags(body)
+	if len(tags) != 1 || tags[0] != "realtag" {
+		t.Fatalf("ExtractTags() = %#v, want [realtag]", tags)
+	}
+	wikilinks := ExtractWikilinks(body)
+	if len(wikilinks) != 1 || wikilinks[0] != "Real Link" {
+		t.Fatalf("ExtractWikilinks() = %#v, want [Real Link]", wikilinks)
+	}
+}
+
 func TestExtractTagsIncludesFrontmatterTags(t *testing.T) {
 	body := "---\ntags: [frontmatter, \"#quoted\", project/nested]\ntitle: #ignored\n---\n\n#inline"
 
