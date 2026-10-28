@@ -406,6 +406,7 @@ func TestDuplicateFolderKeepsOtherSettings(t *testing.T) {
 		DisplayName:          "Work",
 		PrimaryNotesLocation: PrimaryNotesInbox,
 		TasksLocation:        FileLocationSetting{Mode: FileLocationFolder, Folder: "Tasks"},
+		SharesLocation:       ShareLocationSetting{Mode: ShareLocationFolder, Folder: "Clippings"},
 		SystemFolderPaths:    map[string]string{"inbox": "Entry"},
 		Tasks:                &TasksSettings{ExcludedFolders: []string{"Entry/Old"}},
 	}); err != nil {
@@ -430,6 +431,9 @@ func TestDuplicateFolderKeepsOtherSettings(t *testing.T) {
 	}
 	if got.TasksLocation.Mode != FileLocationFolder || got.TasksLocation.Folder != "Tasks" {
 		t.Errorf("tasks location = %+v, want folder mode with Tasks", got.TasksLocation)
+	}
+	if got.SharesLocation != (ShareLocationSetting{Mode: ShareLocationFolder, Folder: "Clippings"}) {
+		t.Errorf("shares location = %+v, want folder mode with Clippings", got.SharesLocation)
 	}
 	if got.Tasks == nil || len(got.Tasks.ExcludedFolders) != 1 {
 		t.Errorf("tasks settings = %+v, want the exclusion kept", got.Tasks)

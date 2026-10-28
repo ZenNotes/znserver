@@ -428,6 +428,12 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 		// before 2.46: the web client and a desktop on a remote vault hide New
 		// template and Edit there and say the server needs an update.
 		"supportsCustomTemplates": true,
+		// vault.json's `sharesLocation` (where a share from the macOS Share
+		// menu is filed) survives the /vault/settings round-trip. Absent
+		// before 2.79, whose settings save drops it: a desktop on such a
+		// server hides Default shares location rather than offer a choice
+		// the server forgets, and files its shares in Quick Notes.
+		"supportsSharesLocation": true,
 		// Says out loud that a missing file answers 404 rather than 500.
 		// Databases are composed from file reads where "absent" and "failed"
 		// mean opposite things (see remote-absence.ts), and a server that

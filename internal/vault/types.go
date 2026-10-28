@@ -264,6 +264,28 @@ type FileLocationSetting struct {
 	Folder string           `json:"folder,omitempty"`
 }
 
+// ShareLocationMode mirrors shared/ipc.ts ShareLocationMode: where a share
+// from the macOS Share menu is filed. No active-note: the app files a share
+// with no note in view.
+type ShareLocationMode string
+
+const (
+	ShareLocationQuick   ShareLocationMode = "quick"
+	ShareLocationPrimary ShareLocationMode = "primary"
+	ShareLocationFolder  ShareLocationMode = "folder"
+)
+
+// ShareLocationSetting mirrors shared/ipc.ts ShareLocationSetting. The desktop
+// app reads it from the server to file a share into a server vault, so it is a
+// first-class field for the #446/#379 round-trip rule. Its JSON hooks and
+// normalizer live in share_location.go.
+type ShareLocationSetting struct {
+	Mode ShareLocationMode
+	// Folder is the subfolder of the primary notes location, read only in
+	// folder mode.
+	Folder string
+}
+
 type VaultSettings struct {
 	// DisplayName is what the clients call the vault (#692): the sidebar
 	// header, the vault switcher, the title bar. Mirrors shared/ipc.ts
@@ -278,6 +300,7 @@ type VaultSettings struct {
 	DrawingsLocation     FileLocationSetting     `json:"drawingsLocation"`
 	DatabasesLocation    FileLocationSetting     `json:"databasesLocation"`
 	TasksLocation        FileLocationSetting     `json:"tasksLocation"`
+	SharesLocation       ShareLocationSetting    `json:"sharesLocation"`
 	FolderIcons          map[string]FolderIconID `json:"folderIcons"`
 	// FolderColors are per-folder accent colors, keyed by `folder:subpath` (the
 	// same key as FolderIcons). Persisted so the web client's recolors survive a
