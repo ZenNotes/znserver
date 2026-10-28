@@ -2496,16 +2496,14 @@ func (v *Vault) DuplicateFolder(folder NoteFolder, subpath string) (string, erro
 	}
 	rel, _ := filepath.Rel(base, dst)
 	relPath := filepath.ToSlash(rel)
-	_, err = v.SetSettings(VaultSettings{
-		PrimaryNotesLocation: settings.PrimaryNotesLocation,
-		DailyNotes:           settings.DailyNotes,
-		WeeklyNotes:          settings.WeeklyNotes,
-		MonthlyNotes:         settings.MonthlyNotes,
-		FolderIcons:          duplicateFolderIcons(settings.FolderIcons, folder, subpath, relPath),
-		FolderColors:         duplicateFolderColors(settings.FolderColors, folder, subpath, relPath),
-		// A duplicated folder isn't auto-favorited; carry existing favorites through.
-		Favorites: settings.Favorites,
-	})
+	// Start from the whole settings, as RenameFolder and DeleteFolder do: a
+	// literal naming the fields to keep dropped every field it did not name,
+	// the inbox remap and the display name among them. A duplicated folder
+	// isn't auto-favorited, so favorites pass through unchanged.
+	next := settings
+	next.FolderIcons = duplicateFolderIcons(settings.FolderIcons, folder, subpath, relPath)
+	next.FolderColors = duplicateFolderColors(settings.FolderColors, folder, subpath, relPath)
+	_, err = v.SetSettings(next)
 	if err != nil {
 		return "", err
 	}

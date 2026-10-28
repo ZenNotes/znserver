@@ -393,6 +393,49 @@ func TestDuplicateFolderRefusesNestedSymlink(t *testing.T) {
 	}
 }
 
+// Duplicating a folder rewrote vault.json from a literal that named seven
+// fields, so it reset everything else: a vault with a remapped inbox lost the
+// remap, and a named vault lost its name.
+func TestDuplicateFolderKeepsOtherSettings(t *testing.T) {
+	root := t.TempDir()
+	v, err := New(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.SetSettings(VaultSettings{
+		DisplayName:          "Work",
+		PrimaryNotesLocation: PrimaryNotesInbox,
+		TasksLocation:        FileLocationSetting{Mode: FileLocationFolder, Folder: "Tasks"},
+		SystemFolderPaths:    map[string]string{"inbox": "Entry"},
+		Tasks:                &TasksSettings{ExcludedFolders: []string{"Entry/Old"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "Entry", "Projects"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := v.DuplicateFolder(FolderInbox, "Projects"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := v.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DisplayName != "Work" {
+		t.Errorf("display name = %q, want Work", got.DisplayName)
+	}
+	if got.SystemFolderPaths["inbox"] != "Entry" {
+		t.Errorf("inbox remap = %v, want inbox: Entry", got.SystemFolderPaths)
+	}
+	if got.TasksLocation.Mode != FileLocationFolder || got.TasksLocation.Folder != "Tasks" {
+		t.Errorf("tasks location = %+v, want folder mode with Tasks", got.TasksLocation)
+	}
+	if got.Tasks == nil || len(got.Tasks.ExcludedFolders) != 1 {
+		t.Errorf("tasks settings = %+v, want the exclusion kept", got.Tasks)
+	}
+}
+
 func TestSearchTextRefreshesAfterExternalChange(t *testing.T) {
 	root := t.TempDir()
 	v, err := New(root, Options{})
