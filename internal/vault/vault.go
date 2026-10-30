@@ -372,6 +372,10 @@ func cloneSettings(settings VaultSettings) VaultSettings {
 	if settings.TypstPreambles != nil {
 		typstPreambles = &TypstPreambleSettings{Folder: settings.TypstPreambles.Folder}
 	}
+	var templates *TemplateFolderSettings
+	if settings.Templates != nil {
+		templates = &TemplateFolderSettings{Folder: settings.Templates.Folder}
+	}
 	var harper *HarperSettings
 	if settings.Harper != nil {
 		words := make([]string, len(settings.Harper.Words))
@@ -425,6 +429,7 @@ func cloneSettings(settings VaultSettings) VaultSettings {
 		SystemFolderPaths: systemFolderPaths,
 		Tasks:             tasks,
 		TypstPreambles:    typstPreambles,
+		Templates:         templates,
 		Harper:            harper,
 	}
 }
@@ -630,6 +635,7 @@ func normalizeVaultSettings(value VaultSettings, fallbackPrimary PrimaryNotesLoc
 		SystemFolderPaths: normalizeSystemFolderPaths(value.SystemFolderPaths),
 		Tasks:             normalizeTasksSettings(value.Tasks),
 		TypstPreambles:    normalizeTypstPreambleSettings(value.TypstPreambles),
+		Templates:         normalizeTemplateFolderSettings(value.Templates),
 		Harper:            normalizeHarperSettings(value.Harper),
 	}
 }
@@ -2415,6 +2421,8 @@ func (v *Vault) RenameFolder(folder NoteFolder, oldSub, newSub string) (string, 
 		next.FolderColors = rewriteFolderColorsForRename(settings.FolderColors, folder, oldSub, newSub)
 		// The Tasks folder lists name on-disk paths, so they follow the folder.
 		next.Tasks = rewriteTasksFoldersForRename(settings.Tasks, filepath.ToSlash(oldVaultRel), filepath.ToSlash(newVaultRel))
+		// So does the template folder (#1024).
+		next.Templates = rewriteTemplateFolderForRename(settings.Templates, filepath.ToSlash(oldVaultRel), filepath.ToSlash(newVaultRel))
 		_, err := v.SetSettings(next)
 		return err
 	})
@@ -2528,8 +2536,9 @@ func (v *Vault) ScanTasksWith(opts ParseTasksOptions) ([]Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	excluded := tasksExcludedFolders(settings)
-	included := tasksIncludedFolders(settings)
+	// The template folder (#1024) rides with the excluded folders: its
+	// checkboxes are placeholders for the notes it will make.
+	excluded, included := tasksFolderLists(settings)
 	if opts.IncludeExcluded {
 		excluded = nil
 		included = nil
@@ -2617,8 +2626,9 @@ func (v *Vault) ScanTasksForPathWith(rel string, opts ParseTasksOptions) ([]Task
 	// Same gates as the full scan, or a single-note rescan would resurrect
 	// tasks the walker skips: trashed and unclassifiable notes contribute
 	// nothing (mirrors the desktop's LIVE_FOLDERS check), and neither do notes
-	// under an excluded folder (#458) or outside the Task folders (#962). The
-	// caller uses the empty result to drop stale rows.
+	// under an excluded folder (#458), outside the Task folders (#962) or in
+	// the template folder (#1024). The caller uses the empty result to drop
+	// stale rows.
 	folder, ok := v.folderOf(abs)
 	if !ok || folder == FolderTrash {
 		return []Task{}, nil
@@ -2629,7 +2639,8 @@ func (v *Vault) ScanTasksForPathWith(rel string, opts ParseTasksOptions) ([]Task
 		if err != nil {
 			return nil, err
 		}
-		if isPathExcludedFromTasks(relPosix, tasksExcludedFolders(settings), tasksIncludedFolders(settings)) {
+		excluded, included := tasksFolderLists(settings)
+		if isPathExcludedFromTasks(relPosix, excluded, included) {
 			return []Task{}, nil
 		}
 	}
@@ -2799,9 +2810,21 @@ func (v *Vault) SearchText(query string) ([]TextSearchMatch, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Template notes (#1024) are placeholders nobody is searching for. They
+	// are skipped here rather than left out of the cache, so the cached
+	// candidates stay valid when the setting moves, and before the cap, so
+	// the 200 matches are spent on real notes.
+	settings, err := v.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	templateFolder := resolveTemplateFolder(settings)
 	out := []TextSearchMatch{}
 	for _, candidate := range candidates {
 		if !strings.Contains(candidate.lineLower, needle) {
+			continue
+		}
+		if isPathInTemplateFolder(candidate.match.Path, templateFolder) {
 			continue
 		}
 		out = append(out, candidate.match)

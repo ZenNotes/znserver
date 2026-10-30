@@ -320,6 +320,11 @@ type VaultSettings struct {
 	// VaultSettings.typstPreambles; a first-class field for the same round-trip
 	// reason as Tasks above.
 	TypstPreambles *TypstPreambleSettings `json:"typstPreambles,omitempty"`
+	// The template folder (#1024). Mirrors shared/ipc.ts
+	// VaultSettings.templates; a first-class field for the same round-trip
+	// reason as Tasks above. Its JSON hook and normalizer live in
+	// template_folder.go.
+	Templates *TemplateFolderSettings `json:"templates,omitempty"`
 	// Harper grammar-checker data that belongs to the vault (dictionary words
 	// and ignored-suggestion hashes). Mirrors shared/ipc.ts VaultSettings.harper;
 	// a first-class field for the same round-trip reason as Tasks above.
@@ -352,6 +357,16 @@ type TasksSettings struct {
 type TypstPreambleSettings struct {
 	// Folder names the directory whose notes are Typst preambles, matched at
 	// any depth. Empty means the default, `typst`.
+	Folder string `json:"folder,omitempty"`
+}
+
+// TemplateFolderSettings mirrors shared/ipc.ts VaultSettings.templates
+// (#1024). A new field here also needs normalizeTemplateFolderSettings,
+// cloneSettings and UnmarshalJSON, or GetSettings hands it back stripped.
+type TemplateFolderSettings struct {
+	// Folder is a vault-relative directory path as it exists on disk, such as
+	// `Templates`. Every note inside it, at any depth, is a template, kept out
+	// of the task scan and of text search.
 	Folder string `json:"folder,omitempty"`
 }
 

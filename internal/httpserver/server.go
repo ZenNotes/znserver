@@ -434,6 +434,12 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 		// server hides Default shares location rather than offer a choice
 		// the server forgets, and files its shares in Quick Notes.
 		"supportsSharesLocation": true,
+		// vault.json's `templates.folder` (#1024) survives the
+		// /vault/settings round-trip, and the task scan and text search leave
+		// that folder out. Absent before 2.80, whose settings save drops it:
+		// the clients hide the Template folder row rather than offer a choice
+		// the server forgets.
+		"supportsTemplateFolder": true,
 		// Says out loud that a missing file answers 404 rather than 500.
 		// Databases are composed from file reads where "absent" and "failed"
 		// mean opposite things (see remote-absence.ts), and a server that
