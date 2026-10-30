@@ -602,10 +602,13 @@ func ParseTasksWith(path, title string, folder NoteFolder, body string, opts Par
 
 	out := []Task{}
 	// A whole-note "file task" (if the frontmatter is tagged `task`) is emitted
-	// before the inline checkbox tasks in the same note, which act as subtasks.
+	// before the inline checkbox tasks in the same note, which act as subtasks:
+	// the ones no other checkbox owns name it as their parent (#1028).
+	fileTaskID := ""
 	if mode != tasksModeNone {
 		if fileTask, ok := parseTaskFile(path, title, folder, normalized); ok {
 			out = append(out, fileTask)
+			fileTaskID = fileTask.ID
 		}
 	}
 	if mode != tasksModeAll {
@@ -614,6 +617,7 @@ func ParseTasksWith(path, title string, folder NoteFolder, body string, opts Par
 	taskIndex := 0
 	inFence := false
 	fenceMarker := ""
+	nesting := taskNesting{}
 
 	fenceStart := regexp.MustCompile("^([ \t]*)(`{3,}|~{3,})")
 
@@ -623,6 +627,7 @@ func ParseTasksWith(path, title string, folder NoteFolder, body string, opts Par
 			if !inFence {
 				inFence = true
 				fenceMarker = marker
+				nesting.visit(line, "")
 			} else if marker == fenceMarker {
 				inFence = false
 				fenceMarker = ""
@@ -634,7 +639,17 @@ func ParseTasksWith(path, title string, folder NoteFolder, body string, opts Par
 		}
 		m := taskLineRe.FindStringSubmatch(line)
 		if m == nil {
+			nesting.visit(line, "")
 			continue
+		}
+		id := fmtTaskID(path, taskIndex)
+		structural := ""
+		if isMarkdownCheckbox(m[3]) {
+			structural = id
+		}
+		parentID := nesting.visit(line, structural)
+		if parentID == "" {
+			parentID = fileTaskID
 		}
 		checkedChar := m[2]
 		tail := strings.TrimPrefix(m[3], "]")
@@ -708,7 +723,8 @@ func ParseTasksWith(path, title string, folder NoteFolder, body string, opts Par
 		}
 
 		task := Task{
-			ID:         fmtTaskID(path, taskIndex),
+			ID:         id,
+			ParentID:   parentID,
 			SourcePath: path,
 			NoteTitle:  title,
 			NoteFolder: folder,

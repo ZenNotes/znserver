@@ -470,7 +470,14 @@ type TextSearchMatch struct {
 
 // Task — mirrors shared/tasks.ts VaultTask.
 type Task struct {
-	ID         string     `json:"id"`
+	ID string `json:"id"`
+	// ParentID is the id of the task this one is a subtask of
+	// (ZenNotes/zennotes#1028): the checkbox whose list item this line's list
+	// item sits directly inside, or the note's file task (path + "#task") for
+	// a checkbox in a task note that no other checkbox owns. Empty on a
+	// top-level task. Mirrors VaultTask.parentId; the web Kanban board folds
+	// subtasks into their parent's card from it.
+	ParentID   string     `json:"parentId,omitempty"`
 	SourcePath string     `json:"sourcePath"`
 	NoteTitle  string     `json:"noteTitle"`
 	NoteFolder NoteFolder `json:"noteFolder"`
