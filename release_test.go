@@ -3,6 +3,7 @@ package znserver
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +39,20 @@ func TestVersionFallsBackToUndefined(t *testing.T) {
 	for _, raw := range cases {
 		if got := versionFrom([]byte(raw)); got != "undefined" {
 			t.Fatalf("versionFrom(%q) = %q, want undefined", raw, got)
+		}
+	}
+}
+
+// A scratch image has no /tmp unless it ships one, and an upload over 8 MiB needs it.
+func TestImageShipsATempDirectory(t *testing.T) {
+	raw, err := os.ReadFile("Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, want := range []string{"chmod 1777 /out/root/tmp", "COPY --from=build /out/root/ /"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the Dockerfile lacks %q", want)
 		}
 	}
 }

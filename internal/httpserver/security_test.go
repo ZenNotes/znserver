@@ -197,6 +197,44 @@ func TestUploadAssetRespects413(t *testing.T) {
 	}
 }
 
+// An upload over 8 MiB spills to a temp file, which must not outlive the request.
+func TestUploadLeavesNoTempFile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	root := t.TempDir()
+	server, _ := newTestServer(t, config.Config{
+		VaultPath:     root,
+		Bind:          "127.0.0.1:7878",
+		AuthToken:     "secret-token",
+		MaxAssetBytes: 50 << 20,
+		MaxNoteBytes:  10 << 20,
+	})
+	client := &http.Client{Jar: loginAndJar(t, server, "secret-token")}
+	upload := func() int {
+		body := &bytes.Buffer{}
+		mw := multipart.NewWriter(body)
+		part, _ := mw.CreateFormFile("file", "big.bin")
+		_, _ = part.Write(bytes.Repeat([]byte("a"), 12<<20))
+		_ = mw.Close()
+		resp, err := client.Post(server.URL+"/api/assets/upload", mw.FormDataContentType(), body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	if status := upload(); status != http.StatusOK {
+		t.Fatalf("upload: %d", status)
+	}
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("left behind: %v", entries)
+	}
+}
+
 func TestWriteNoteRespects413(t *testing.T) {
 	root := t.TempDir()
 	server, _ := newTestServer(t, config.Config{

@@ -29,6 +29,25 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: false
+  # What a scratch image lacks only shows when it runs: an upload over 8 MiB needs /tmp.
+  docker-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: zennotes:ci
+      - name: Upload 12 MiB to the running image
+        run: |
+          mkdir vault data
+          chmod 777 vault data
+          docker run -d --name zennotes -p 127.0.0.1:7878:7878 -v "$PWD/vault:/workspace" -v "$PWD/data:/data" -e ZENNOTES_AUTH_TOKEN=ci-token zennotes:ci
+          for attempt in $(seq 1 30); do curl -fs http://127.0.0.1:7878/healthz && break; sleep 1; done
+          head -c 12582912 /dev/zero > big.bin
+          curl -fsS -H 'Authorization: Bearer ci-token' -F file=@big.bin http://127.0.0.1:7878/api/assets/upload
   nix:
     runs-on: ubuntu-latest
     steps:

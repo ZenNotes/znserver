@@ -1067,6 +1067,9 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// net/http cleans up only the form on the request it started with, and the router
+	// hands this handler a copy.
+	defer func() { _ = r.MultipartForm.RemoveAll() }()
 	notePath := r.FormValue("notePath")
 	file, header, err := r.FormFile("file")
 	if err != nil {
