@@ -115,9 +115,28 @@ docker compose up -d
 docker compose logs -f
 ```
 
-The container has no shell or `curl`, so a Compose `healthcheck` cannot run
-inside it. Probe `GET /healthz` from the host instead. It returns
-`{"ok":true}` without authentication.
+The image reports its health to Docker on its own: `docker ps` shows `healthy`
+or `unhealthy`, and Compose's `depends_on: condition: service_healthy` works
+with no extra setup. It runs `/zennotes-server healthcheck`, because the
+container has no shell or `curl`. To change the timing, set your own in Compose:
+
+```yaml
+healthcheck:
+  test: ["CMD", "/zennotes-server", "healthcheck"]
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 30s
+```
+
+The check means the server is answering, not that the vault is readable. From
+outside the container, `GET /healthz` returns `{"ok":true}` without
+authentication.
+
+A proxy that reads Docker health, such as Traefik, routes to the container only
+once it is healthy. The first check runs a second after start on Docker 25 or
+later, and after 30 seconds on older versions. To opt out, set
+`healthcheck: { disable: true }` in Compose.
 
 ### Image tags
 

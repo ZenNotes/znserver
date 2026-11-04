@@ -22,6 +22,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "healthcheck" {
+		os.Exit(runHealthcheck())
+	}
+
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	// First, so a bug report carries the version even when startup fails below.
 	log.Printf("ZenNotes Server: v%s", znserver.Version())
