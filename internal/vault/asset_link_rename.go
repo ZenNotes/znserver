@@ -314,7 +314,7 @@ func rewriteAssetReferencesInBody(body string, assets []AssetMeta, notePath, old
 		embed := body[m[2]:m[3]]
 		content := body[m[4]:m[5]]
 		target, rest := content, ""
-		if p := strings.IndexByte(content, '|'); p >= 0 {
+		if p := wikiAliasStart(content); p >= 0 {
 			target, rest = content[:p], content[p:]
 		}
 		r, ok := resolveOld(target)

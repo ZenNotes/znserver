@@ -116,11 +116,23 @@ func wikiResolveTarget(notes []NoteMeta, target string) (NoteMeta, bool) {
 	return NoteMeta{}, false
 }
 
+// wikiAliasStart is where a wikilink's alias starts, separator included, or -1.
+// A table writes the separator as `\|`, the escape GFM needs to keep the pipe in
+// its cell. Note names cannot hold a backslash, so one right before the pipe is
+// that escape, and a rewrite keeps it by keeping it on the alias.
+func wikiAliasStart(content string) int {
+	pipe := strings.IndexByte(content, '|')
+	if pipe > 0 && content[pipe-1] == '\\' {
+		return pipe - 1
+	}
+	return pipe
+}
+
 func wikiSplitContent(content string) (target, anchor, alias string) {
 	rest := content
-	if pipe := strings.IndexByte(rest, '|'); pipe >= 0 {
-		alias = rest[pipe:]
-		rest = rest[:pipe]
+	if start := wikiAliasStart(rest); start >= 0 {
+		alias = rest[start:]
+		rest = rest[:start]
 	}
 	if idx := strings.IndexAny(rest, "#^"); idx >= 0 {
 		anchor = rest[idx:]
