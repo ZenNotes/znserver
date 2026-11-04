@@ -119,6 +119,11 @@ func wikiResolveTarget(notes []NoteMeta, target string) (NoteMeta, bool) {
 func wikiSplitContent(content string) (target, anchor, alias string) {
 	rest := content
 	if pipe := strings.IndexByte(rest, '|'); pipe >= 0 {
+		// In a table a link's pipe is written `\|`. The backslash belongs to the
+		// separator, and it has to survive the rewrite or the cell splits in two.
+		if pipe > 0 && rest[pipe-1] == '\\' {
+			pipe--
+		}
 		alias = rest[pipe:]
 		rest = rest[:pipe]
 	}

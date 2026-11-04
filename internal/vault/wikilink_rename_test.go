@@ -125,3 +125,29 @@ func TestRenameNoteRewritesAnchoredOnlyInboundWikilinks(t *testing.T) {
 		t.Fatalf("source after rename =\n%q\nwant\n%q", got.Body, want)
 	}
 }
+
+// A link inside a table writes its pipe as `\|`. A rename has to find the note
+// behind it and keep the backslash, or the rewrite splits the table's cell.
+func TestRewriteWikilinksKeepsATablesEscapedPipe(t *testing.T) {
+	notes := []NoteMeta{
+		{Path: "inbox/Work/C.md", Title: "C", Folder: "inbox"},
+		{Path: "inbox/Other.md", Title: "Other", Folder: "inbox"},
+	}
+	cases := map[string]string{
+		`| [[C\|see]] | x |`:       `| [[E\|see]] | x |`,
+		`| ![[C\|see]] | x |`:      `| ![[E\|see]] | x |`,
+		`| [[Work/C\|see]] | x |`:  `| [[Work/E\|see]] | x |`,
+		`| [[/Work/C\|see]] | x |`: `| [[/Work/E\|see]] | x |`,
+		`| [[C#Intro\|see]] | x |`: `| [[E#Intro\|see]] | x |`,
+		`| [[Other\|see]] | x |`:   `| [[Other\|see]] | x |`,
+		"| `[[C\\|see]]` | x |":    "| `[[C\\|see]]` | x |",
+	}
+	for in, want := range cases {
+		if got, _ := rewriteWikilinksForRename(in, notes, "inbox/Work/C.md", "E"); got != want {
+			t.Errorf("rewrite(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := ExtractWikilinks(`| [[C\|see]] | x |`); len(got) != 1 || got[0] != "C" {
+		t.Errorf("ExtractWikilinks = %q, want [C]", got)
+	}
+}
