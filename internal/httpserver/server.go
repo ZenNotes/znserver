@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -45,6 +46,14 @@ type Server struct {
 	loginLimiter    *attemptLimiter
 	wsRejectLimiter *attemptLimiter
 	loggedOrigins   sync.Map // origin -> struct{}; dedupes CORS-rejection logs
+
+	// Set once by EnableMCP before Router runs, and read-only after. mcp stays nil
+	// unless MCP is on, in which case /mcp is not routed at all.
+	mcp          http.Handler
+	mcpTokens    map[[sha256.Size]byte]bool
+	mcpVaultRoot string
+	// self is the finished router, which the MCP tools call in-process.
+	self http.Handler
 }
 
 func init() {
@@ -153,6 +162,11 @@ func (s *Server) Router() http.Handler {
 		s.registerProtectedRoutes(r)
 	})
 
+	// Outside requireAuth, which takes the server's token: /mcp has its own.
+	if s.mcp != nil {
+		inner.Handle("/mcp", s.mcp)
+	}
+
 	// Static / PWA fallback.
 	if s.Static != nil {
 		inner.Get("/*", s.serveStatic)
@@ -168,6 +182,7 @@ func (s *Server) Router() http.Handler {
 	outer.Use(s.corsMiddleware)
 	outer.Use(middleware.Recoverer)
 
+	s.self = outer
 	basePath := s.currentConfig().BasePath
 	if basePath != "" {
 		outer.Mount(basePath, inner)

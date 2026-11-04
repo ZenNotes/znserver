@@ -32,6 +32,7 @@ amd64. The Docker image is published for `linux/amd64` and `linux/arm64`.
 - [First run](#first-run)
 - [Configuration](#configuration)
 - [Exposing the server on a network](#exposing-the-server-on-a-network)
+- [MCP for AI assistants](#mcp-for-ai-assistants)
 - [Upgrading and rolling back](#upgrading-and-rolling-back)
 - [Development](#development)
 - [Releases](#releases)
@@ -281,7 +282,7 @@ it to `ReadWritePaths`. The service user must be able to write to it.
 
 ### Build from source
 
-You need Go 1.25 or newer and `git`. Node.js is not required. The browser app
+You need Go 1.26 or newer and `git`. Node.js is not required. The browser app
 is pulled in as a pinned, checksummed archive.
 
 ```sh
@@ -388,7 +389,22 @@ the token from the UI. Environment variables win over the file.
 | `ZENNOTES_DISABLE_WATCHER` | off | Turn off the inotify watcher. Live refresh stops but the vault is fully served. Use on unprivileged LXC hosts where inotify wedges. |
 | `ZENNOTES_DEV` | off | Accept loopback browser origins, such as a Vite dev server, on a non-loopback bind. |
 
-The startup log prints the effective vault, bind, auth, TLS, and CORS settings,
+### MCP
+
+Off unless `ZENNOTES_MCP_ENABLED` is on. See [MCP for AI assistants](#mcp-for-ai-assistants).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ZENNOTES_MCP_ENABLED` | off | Serve MCP at `/mcp`. While off, the route does not exist and the variables below are not read. |
+| `ZENNOTES_MCP_TOKEN` | none | The MCP token for one assistant: 32 characters or more, different from `ZENNOTES_AUTH_TOKEN`. |
+| `ZENNOTES_MCP_TOKEN_FILE` | none | Read that token from a file instead. Contents are trimmed. |
+| `ZENNOTES_MCP_ACCESS` | none, required | `read`, `comment` or `write`. |
+| `ZENNOTES_MCP_ALLOW_PATHS` | whole vault | JSON array of folders and notes to share, such as `["Projects","Areas/Health"]`. Everything else does not exist for the assistant. |
+| `ZENNOTES_MCP_DENY_PATHS` | none | JSON array of folders and notes to hide, even inside an allowed one. |
+| `ZENNOTES_MCP_CREDENTIALS_FILE` | none | Several assistants, each with its own token and scope. Cannot be combined with the token, access and path variables. |
+| `ZENNOTES_MCP_ALLOWED_ORIGINS` | none | Comma-separated `Origin` values to accept. Any other `Origin` gets a 403. MCP clients outside a browser send none, so you rarely need this. Web pages still cannot call `/mcp`, because it sends no CORS headers for them. |
+
+The startup log prints the effective vault, bind, auth, TLS, CORS, and MCP settings,
 so you can confirm what the server actually loaded.
 
 ## Exposing the server on a network
@@ -425,6 +441,113 @@ nginx, forward the `Upgrade` and `Connection` headers on that path.
 For the full checklist, see
 [Secure self-hosting](https://github.com/ZenNotes/zennotes/blob/main/docs/how-to/secure-self-hosting.md)
 in the main repository.
+
+## MCP for AI assistants
+
+Since server 2.83.0, the server can serve [MCP](https://modelcontextprotocol.io) itself,
+so assistants on other machines can use the vault without `zn` installed anywhere. It is
+off by default. The tools and access rules are the same ones `zn mcp` uses, built into the
+server, so there is no second program to install or version to match.
+
+### One assistant
+
+```yaml
+services:
+  zennotes:
+    image: adibhanna/zennotes:2.83
+    environment:
+      - ZENNOTES_AUTH_TOKEN=${ZENNOTES_AUTH_TOKEN:?}
+      - ZENNOTES_VAULT_PATH=/workspace
+      - ZENNOTES_MCP_ENABLED=1
+      - ZENNOTES_MCP_TOKEN=${ZENNOTES_MCP_TOKEN:?}
+      - ZENNOTES_MCP_ACCESS=read
+      - 'ZENNOTES_MCP_ALLOW_PATHS=["Projects"]'
+    volumes:
+      - ./vault:/workspace
+      - ./data:/data
+```
+
+Make the token with `openssl rand -hex 32`. Then, for a client that can send a
+header, such as Claude Code:
+
+```sh
+claude mcp add --transport http zennotes https://notes.example.com/mcp \
+  --header "Authorization: Bearer $ZENNOTES_MCP_TOKEN"
+```
+
+Under `ZENNOTES_BASE_PATH=/notes` the route is `/notes/mcp`. Use HTTPS for anything
+off the machine; see [Exposing the server on a network](#exposing-the-server-on-a-network).
+
+### Several assistants, each with its own scope
+
+Point `ZENNOTES_MCP_CREDENTIALS_FILE` at a file like this. It holds each token's
+SHA-256, not the token, so the token exists only with the client that uses it.
+
+```json
+{
+  "version": 1,
+  "credentials": [
+    { "name": "chatgpt", "tokenSha256": "<64 hex digits>", "access": "read", "allow": ["Projects"] },
+    { "name": "reviewer", "tokenSha256": "<64 hex digits>", "access": "comment", "allow": ["Areas"], "deny": ["Areas/Health"] }
+  ]
+}
+```
+
+```sh
+printf %s "$TOKEN" | shasum -a 256
+```
+
+The token alone decides the scope, and nothing a client sends can widen it. To change
+or revoke a credential, edit the file and restart the server. `name` appears in the
+log.
+
+### Through OpenAI's Secure MCP Tunnel
+
+```yaml
+  zennotes-mcp:
+    image: ghcr.io/openai/tunnel-client:v0.0.19
+    environment:
+      - CONTROL_PLANE_API_KEY=${CONTROL_PLANE_API_KEY:?}
+      - CONTROL_PLANE_TUNNEL_ID=${CONTROL_PLANE_TUNNEL_ID:?}
+      - MCP_SERVER_URL=http://zennotes:7878/mcp
+      - "MCP_EXTRA_HEADERS=Authorization: Bearer ${ZENNOTES_MCP_TOKEN:?}"
+```
+
+The quotes on the last line matter: without them, the `: ` makes it invalid YAML.
+This hop has not been tested yet, because it needs an OpenAI tunnel. Per OpenAI's
+documentation, tool calls and their results pass through OpenAI, and the scope limits
+how much of the vault can make that trip.
+
+### What to know
+
+- **Tokens are separate.** An MCP token opens `/mcp` and nothing else: the REST API,
+  the browser app and login all refuse it. The server's token and browser sessions
+  do not open `/mcp`, so a full-access assistant needs an MCP token as well. Rotating
+  the server's token leaves MCP working, and it cannot be rotated to an MCP token.
+- **The server refuses to start** with MCP on if there is no `ZENNOTES_AUTH_TOKEN`, a
+  token is too short or is the server's own, access is not stated, or a path, a list or
+  the credentials file is invalid. A misspelled field in the file is an error too, so it
+  can never leave a credential seeing more than you meant.
+- **Vault switches.** If the server moves to another vault, every tool call answers that
+  nothing is shared until it restarts or switches back. Setting `ZENNOTES_VAULT_PATH`
+  prevents a switch.
+- **Each request stands alone.** `/mcp` issues no session IDs and answers `GET` with 405.
+- **Limits.** At most 32 requests run at once; the rest get a 503. A request can hold a
+  note up to `ZENNOTES_MAX_NOTE_BYTES` or a 16 MiB attachment.
+- **Logs** hold the credential's name, the tool, the outcome and the duration, and never
+  tokens, arguments, paths or results.
+
+**Not in this version:**
+
+- An assistant restricted to certain paths cannot rename notes, or read, rename, move
+  or copy attachments. Renames are out because the server rewrites links in every note,
+  including ones the assistant cannot see. This is the same as `zn mcp` against a server.
+- Edits made over MCP do not appear in agent edit review.
+- OAuth. ChatGPT's and Claude's ordinary connectors need it and a public URL, so they
+  cannot use a static token. Use the tunnel, or a client that can send a header.
+
+The scope covers ZenNotes tools only: anything else that can read the vault's folder,
+or that holds `ZENNOTES_AUTH_TOKEN`, is not restricted by it.
 
 ## Upgrading and rolling back
 
@@ -529,7 +652,7 @@ binary. Nothing in the vault needs to be undone.
 
 ## Development
 
-Go 1.25 or newer is enough for API work. No frontend toolchain is needed.
+Go 1.26 or newer is enough for API work. No frontend toolchain is needed.
 
 ```sh
 go vet ./...

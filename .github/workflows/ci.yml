@@ -19,6 +19,24 @@ jobs:
       - run: go run ./cmd/prepare-web -manifest web-artifact/manifest.json -output web/dist
       - run: go test -tags=embed_web ./web
       - run: go build -tags=embed_web -trimpath -o bin/zennotes-server ./cmd/zennotes-server
+  # The shared scope contract through a real /mcp, from the tui tag go.mod pins. The
+  # tests only skip when the binary is not set, so nothing here can skip.
+  mcp-contract:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go build -trimpath -o "$RUNNER_TEMP/zennotes-server" ./cmd/zennotes-server
+      - run: git clone --depth 1 --branch "$(go list -m -f '{{.Version}}' github.com/ZenNotes/tui)" https://github.com/ZenNotes/tui.git "$RUNNER_TEMP/tui"
+      - run: go test -count=1 -run 'ThroughHTTP|TestHTTPMCP' ./internal/mcp
+        working-directory: ${{ runner.temp }}/tui
+        env:
+          ZENNOTES_SERVER_MCP_CONTRACT_BINARY: ${{ runner.temp }}/zennotes-server
   docker:
     runs-on: ubuntu-latest
     steps:

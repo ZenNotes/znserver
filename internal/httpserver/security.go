@@ -599,6 +599,10 @@ func (s *Server) sessionRotateToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "new token must differ from current", http.StatusBadRequest)
 		return
 	}
+	if s.mcpTokenTaken(next) {
+		http.Error(w, "new token must differ from every MCP token", http.StatusBadRequest)
+		return
+	}
 
 	s.mu.Lock()
 	cfgCurrent := s.Config.AuthToken
