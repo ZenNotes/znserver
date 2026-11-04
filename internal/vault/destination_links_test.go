@@ -403,3 +403,130 @@ func TestTheDefaultAssetMoveStillWorks(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// A system folder that is a link is hidden at the vault root, and hiding it must
+// not cost the root entries that sort after it.
+func TestALinkedSystemFolderKeepsTheRootListed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		paths map[string]string
+		entry string
+	}{
+		"quick":          {entry: "quick"},
+		"archive":        {entry: "archive"},
+		"trash":          {entry: "trash"},
+		"assets":         {entry: AssetsDir},
+		"remapped":       {paths: map[string]string{"archive": "Held"}, entry: "Held"},
+		"remapped first": {paths: map[string]string{"trash": "Aside"}, entry: "Aside"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			v, root := linkedVault(t)
+			if tc.paths != nil {
+				settings, err := v.GetSettings()
+				if err != nil {
+					t.Fatal(err)
+				}
+				settings.SystemFolderPaths = tc.paths
+				if _, err := v.SetSettings(settings); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for rel, body := range map[string]string{
+				"000.md":      "# First\n",
+				"zebra.md":    "# Zebra\n",
+				"zoo/Deep.md": "# Deep\n",
+			} {
+				abs := filepath.Join(root, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(abs, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			link := filepath.Join(root, tc.entry)
+			if err := os.RemoveAll(link); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("Journal", link); err != nil {
+				t.Fatal(err)
+			}
+
+			notes, err := v.ListNotes()
+			if err != nil {
+				t.Fatal(err)
+			}
+			listed := map[string]bool{}
+			for _, n := range notes {
+				listed[n.Path] = true
+				if strings.HasPrefix(n.Path, tc.entry+"/") {
+					t.Errorf("the linked folder is listed: %s", n.Path)
+				}
+			}
+			for _, want := range []string{"000.md", "Journal/Diary.md", "Projects/Plan.md", "zebra.md", "zoo/Deep.md"} {
+				if !listed[want] {
+					t.Errorf("%s is missing from %v", want, listed)
+				}
+			}
+		})
+	}
+}
+
+// The same holds for a plain file that happens to carry a hidden name.
+func TestAFileNamedLikeASystemFolderKeepsTheRootListed(t *testing.T) {
+	v, root := linkedVault(t)
+	if err := os.RemoveAll(filepath.Join(root, "quick")); err != nil {
+		t.Fatal(err)
+	}
+	for rel, body := range map[string]string{"quick": "not a folder", "zebra.md": "# Zebra\n"} {
+		if err := os.WriteFile(filepath.Join(root, rel), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notes, err := v.ListNotes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range notes {
+		if n.Path == "zebra.md" {
+			return
+		}
+	}
+	t.Errorf("zebra.md is missing from %+v", notes)
+}
+
+// A system folder may carry a name that looks like a note. A link there is still
+// the system folder, so the walk of the root must not take it for an inbox note.
+func TestALinkedSystemFolderNamedLikeANoteIsNotAnInboxNote(t *testing.T) {
+	v, root := linkedVault(t)
+	settings, err := v.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.SystemFolderPaths = map[string]string{"archive": "Held.md"}
+	if _, err := v.SetSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "Held.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("Journal", "Diary.md"), filepath.Join(root, "Held.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "zebra.md"), []byte("# Zebra\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notes, err := v.ListNotes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]bool{}
+	for _, n := range notes {
+		listed[n.Path] = true
+		if n.Path == "Held.md" && n.Folder == FolderInbox {
+			t.Errorf("the linked system folder is listed as an inbox note: %+v", n)
+		}
+	}
+	if !listed["zebra.md"] {
+		t.Errorf("zebra.md is missing from %v", listed)
+	}
+}
