@@ -53,8 +53,9 @@ func ExtractAssetEmbeds(body string) []string {
 // intentionally the same shape so the extracted metadata matches the
 // desktop build byte-for-byte for the common cases. A table writes a wikilink's
 // separator as `\|`, the escape GFM needs to keep the pipe in its cell, so the
-// separator takes an optional backslash: note names cannot hold one, and without
-// this the target of `[[C\|d]]` reads as `C\`.
+// separator takes an optional backslash: the app never creates a name with one,
+// and without this the target of `[[C\|d]]` reads as `C\`. A file named `C\.md`
+// made elsewhere is not what such a link reaches.
 
 var (
 	fenceLineRe   = regexp.MustCompile("^[ \t]*(`{3,}|~{3,})(.*)$")
@@ -179,7 +180,8 @@ func ExtractWikilinks(body string) []string {
 		if len(m) >= 3 {
 			bang := m[1]
 			target := strings.TrimSpace(m[2])
-			if target == "" {
+			// `[[\|d]]` and `[[\]]` name nothing.
+			if target == "" || target == `\` {
 				continue
 			}
 			if bang == "!" && localAssetTargetKind(target) != "" {

@@ -10,8 +10,8 @@ import (
 )
 
 // A table cell escapes a wikilink's separator as `\|`, because GFM would end the
-// cell at a bare pipe. Note names cannot hold a backslash, so one right before
-// the pipe is always the escape and never part of the target.
+// cell at a bare pipe. The app never creates a name with a backslash, so one right
+// before the pipe is read as the escape and never as part of the target.
 
 func TestExtractWikilinksReadsAnEscapedPipe(t *testing.T) {
 	cases := []struct {
@@ -31,6 +31,9 @@ func TestExtractWikilinksReadsAnEscapedPipe(t *testing.T) {
 		{"a backslash with no pipe stays", `[[C\]]`, []string{`C\`}},
 		{"a backslash inside a target stays", `[[a\b|d]]`, []string{`a\b`}},
 		{"inline code", "`[[C\\|d]]`", []string{}},
+		{"a separator with no target", `[[\|d]]`, []string{}},
+		{"a space with no target", `[[ \|d]]`, []string{}},
+		{"a backslash alone", `[[\]]`, []string{}},
 		// An embedded asset is reported under AssetEmbeds, not as a link.
 		{"asset embed", `| ![[pic.png\|300]] |`, []string{}},
 		{"note embed", `| ![[C\|300]] |`, []string{"C"}},
@@ -131,6 +134,8 @@ func TestRenameNoteRewritesAnEscapedPipeInATable(t *testing.T) {
 		{"embed", `| ![[Old Title\|d]] |`, `| ![[New Title\|d]] |`, 1},
 		{"unescaped stays unescaped", `[[Old Title|d]]`, `[[New Title|d]]`, 1},
 		{"code stays", "`[[Old Title\\|d]]`", "`[[Old Title\\|d]]`", 0},
+		{"backslash in the path", `| [[demo\Old Title.md\|d]] |`, `| [[demo\New Title.md\|d]] |`, 1},
+		{"backslash in the path, unescaped", `[[demo\Old Title.md|d]]`, `[[demo\New Title.md|d]]`, 1},
 		{"another note stays", `| [[Other\|d]] |`, `| [[Other\|d]] |`, 0},
 	}
 	for _, tc := range cases {
