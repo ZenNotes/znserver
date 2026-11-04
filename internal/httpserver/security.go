@@ -393,7 +393,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 					w.Header().Set("Access-Control-Allow-Credentials", "true")
 				}
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, If-Match")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, If-Match, Mcp-Protocol-Version")
 				w.Header().Add("Vary", "Origin")
 				if r.Method == http.MethodOptions {
 					w.WriteHeader(http.StatusNoContent)
@@ -407,18 +407,25 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+const maxLoggedOrigins = 256
+
 // logCORSRejection emits one log line per unique origin so a
 // misconfigured ZENNOTES_ALLOWED_ORIGINS surfaces in operator logs
 // instead of silently failing in the browser.
 func (s *Server) logCORSRejection(origin string) {
+	// Anyone can send any Origin, so the list of those already logged has an end.
+	if s.loggedOriginCount.Load() >= maxLoggedOrigins {
+		return
+	}
 	if _, loaded := s.loggedOrigins.LoadOrStore(origin, struct{}{}); loaded {
 		return
 	}
+	s.loggedOriginCount.Add(1)
 	log.Printf(
 		"CORS rejected origin %q; add it verbatim to ZENNOTES_ALLOWED_ORIGINS (comma-separated) to allow it, "+
 			"or set ZENNOTES_ALLOWED_ORIGINS=* to allow any origin without credentials. "+
 			"The ZenNotes desktop app talks to the server from its main process and sends no Origin, so it is "+
-			"never affected by this — browser and WebView clients are.",
+			"never affected by this. Browser and WebView clients are.",
 		origin,
 	)
 }

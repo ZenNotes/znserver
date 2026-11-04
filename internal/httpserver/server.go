@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -47,6 +48,8 @@ type Server struct {
 	loginLimiter    *attemptLimiter
 	wsRejectLimiter *attemptLimiter
 	loggedOrigins   sync.Map // origin -> struct{}; dedupes CORS-rejection logs
+	// loggedOriginCount is how many are in loggedOrigins.
+	loggedOriginCount atomic.Int64
 
 	// Set once by EnableMCP before Router runs, and read-only after. mcp stays nil
 	// unless MCP is on, in which case /mcp is not routed at all.
@@ -1089,12 +1092,28 @@ func (s *Server) rawAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ext := strings.ToLower(filepath.Ext(abs))
-	if t := mime.TypeByExtension(ext); t != "" {
-		w.Header().Set("Content-Type", t)
+	contentType := mime.TypeByExtension(ext)
+	if inertAssetExt[ext] {
+		contentType = "text/plain; charset=utf-8"
+	}
+	if contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	// A vault's files are not this site's code, and whoever wrote one may have had less
+	// access than the person now viewing it. As a page or a document, a file runs no
+	// script and gets no access to this origin. An image still draws, SVG included, and
+	// PDFs are exempt because the browser's viewer does not work in a sandbox (#121).
+	if ext != ".pdf" {
+		w.Header().Set("Content-Security-Policy", contentSecurityPolicy()+"; sandbox")
 	}
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	http.ServeFile(w, r, abs)
 }
+
+// inertAssetExt are files a page could load as code with a `<script>` tag or the like,
+// where a sandbox on the file itself does nothing. With nosniff, a browser will not run
+// them as plain text.
+var inertAssetExt = map[string]bool{".js": true, ".mjs": true, ".cjs": true, ".wasm": true}
 
 func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 	cfg := s.currentConfig()

@@ -29,6 +29,7 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	// First, so a bug report carries the version even when startup fails below.
 	log.Printf("ZenNotes Server: v%s", znserver.Version())
+	applyMemoryLimit()
 
 	cfg := config.Load()
 	if strings.TrimSpace(cfg.AuthToken) == "" && !cfg.AllowInsecureNoAuth && !bindIsLoopback(cfg.Bind) {
@@ -79,12 +80,7 @@ func main() {
 	if err := srv.EnableMCP(mcpCfg); err != nil {
 		log.Fatalf("refusing to start: %v", err)
 	}
-	httpSrv := &http.Server{
-		Addr:         cfg.Bind,
-		Handler:      srv.Router(),
-		ReadTimeout:  0, // Websocket-friendly.
-		WriteTimeout: 0,
-	}
+	httpSrv := newHTTPServer(cfg.Bind, srv.Router())
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -106,6 +102,17 @@ func main() {
 	shutdownCtx, stopShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stopShutdown()
 	_ = httpSrv.Shutdown(shutdownCtx)
+}
+
+func newHTTPServer(bind string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:         bind,
+		Handler:      handler,
+		ReadTimeout:  0, // Websocket-friendly.
+		WriteTimeout: 0,
+		// Headers come first on every request, websockets included.
+		ReadHeaderTimeout: 30 * time.Second,
+	}
 }
 
 // logVaultPermissionHelp turns the cryptic "mkdir … permission denied" into
