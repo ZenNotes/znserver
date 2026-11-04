@@ -135,3 +135,70 @@ func TestSafeJoinRootMissing(t *testing.T) {
 		t.Fatalf("unexpected path %q", abs)
 	}
 }
+
+func TestSafeDestinationRefusesEveryLink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need a privilege on Windows")
+	}
+	base := t.TempDir()
+	root := filepath.Join(base, "vault")
+	for _, dir := range []string{"Projects/Real", "Journal"} {
+		if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(dir)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "Projects", "Plan.md"), []byte("# plan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{
+		"inner":    filepath.Join("..", "Journal"),
+		"out":      base,
+		"dangling": filepath.Join("..", "Gone"),
+		"file.md":  "Plan.md",
+	} {
+		if err := os.Symlink(target, filepath.Join(root, "Projects", name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for rel, want := range map[string]error{
+		"Projects/inner":         ErrThroughSymlink,
+		"Projects/inner/New":     ErrThroughSymlink,
+		"Projects/inner/New/Sub": ErrThroughSymlink,
+		"Projects/dangling":      os.ErrNotExist, // SafeJoin cannot resolve it
+		"Projects/dangling/New":  os.ErrNotExist,
+		"Projects/file.md":       ErrThroughSymlink,
+		"Projects/out":           ErrPathEscape,
+		"Projects/out/New":       ErrPathEscape,
+		"../Journal":             nil, // cleaned to inside the root, as in SafeJoin
+		"":                       nil,
+		"Projects":               nil,
+		"Projects/Real":          nil,
+		"Projects/Real/New/Sub":  nil,
+		"Projects/New":           nil,
+		"Projects/Plan.md":       nil, // the file's own failure comes from the write
+	} {
+		if _, err := SafeDestination(root, rel); !errors.Is(err, want) {
+			t.Errorf("SafeDestination(%q) = %v, want %v", rel, err, want)
+		}
+	}
+}
+
+// The root is not examined: a vault that is itself a link keeps working.
+func TestSafeDestinationAcceptsALinkedRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need a privilege on Windows")
+	}
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(real, "Projects"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SafeDestination(link, "Projects/New"); err != nil {
+		t.Fatalf("a linked root was refused: %v", err)
+	}
+}

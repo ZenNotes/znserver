@@ -222,6 +222,9 @@ func (v *Vault) RestoreDeletedAsset(deleted DeletedAsset) (AssetMeta, error) {
 		return AssetMeta{}, err
 	}
 	targetDir := filepath.Dir(targetAbs)
+	if _, err := SafeDestination(v.root, filepath.ToSlash(filepath.Dir(targetRel))); err != nil {
+		return AssetMeta{}, err
+	}
 	if err := os.MkdirAll(targetDir, v.dirMode); err != nil {
 		return AssetMeta{}, err
 	}

@@ -330,7 +330,37 @@ func (v *Vault) Info() VaultInfo {
 	if settings, err := v.GetSettings(); err == nil {
 		name = resolveVaultName(settings, v.root)
 	}
-	return VaultInfo{Root: v.root, Name: name}
+	return VaultInfo{Root: v.root, Name: name, LinkedSystemFolders: v.linkedSystemFolders()}
+}
+
+// linkedSystemFolders lists the system folders with a symbolic link on the way
+// to them. Anything but a real directory or nothing at all counts, so a stat
+// that fails reports the folder rather than hiding it.
+func (v *Vault) linkedSystemFolders() []string {
+	linked := []string{}
+	for _, folder := range AllFolders {
+		root, err := v.folderRoot(folder)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(v.root, root)
+		if err != nil || rel == "." {
+			continue
+		}
+		walk := v.root
+		for _, part := range strings.Split(rel, string(filepath.Separator)) {
+			walk = filepath.Join(walk, part)
+			info, err := os.Lstat(walk)
+			if errors.Is(err, os.ErrNotExist) {
+				break
+			}
+			if err != nil || !info.IsDir() {
+				linked = append(linked, filepath.ToSlash(rel))
+				break
+			}
+		}
+	}
+	return linked
 }
 
 func cloneSettings(settings VaultSettings) VaultSettings {
@@ -1208,8 +1238,9 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 	hiddenRootNames := hiddenPrimaryRootNames(settings)
 
 	type noteFile struct {
-		folder NoteFolder
-		path   string
+		folder  NoteFolder
+		path    string
+		symlink bool
 	}
 
 	files := []noteFile{}
@@ -1261,7 +1292,7 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 			if !strings.EqualFold(filepath.Ext(d.Name()), ".md") && !isExcalidrawName(d.Name()) {
 				return nil
 			}
-			files = append(files, noteFile{folder: folder, path: path})
+			files = append(files, noteFile{folder: folder, path: path, symlink: d.Type()&os.ModeSymlink != 0})
 			return nil
 		})
 		if err != nil {
@@ -1291,6 +1322,9 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 			if err != nil {
 				return // skip unreadable files silently
 			}
+			// Set here, not in the meta: the meta cache is keyed by path and
+			// mtime, which a file swapped for a link can keep.
+			meta.Symlink = file.symlink
 			results[index] = meta
 			ok[index] = true
 		}(index, file)
@@ -1461,6 +1495,7 @@ func (v *Vault) ListAssets() ([]AssetMeta, error) {
 				SiblingOrder: index,
 				Size:         info.Size(),
 				UpdatedAt:    info.ModTime().UnixMilli(),
+				Symlink:      isLink,
 			})
 		}
 		return nil
@@ -1916,7 +1951,7 @@ func (v *Vault) CreateNote(folder NoteFolder, title, subpath string) (NoteMeta, 
 		return NoteMeta{}, err
 	}
 	if subpath != "" {
-		sub, err := SafeJoin(dir, subpath)
+		sub, err := SafeDestination(dir, subpath)
 		if err != nil {
 			return NoteMeta{}, err
 		}
@@ -1932,7 +1967,7 @@ func (v *Vault) CreateNote(folder NoteFolder, title, subpath string) (NoteMeta, 
 	// blank notes where a local one has its title, which is most visible on
 	// daily notes, whose date heading is the whole point.
 	stem := strings.TrimSuffix(filepath.Base(abs), ".md")
-	if err := os.WriteFile(abs, fmt.Appendf(nil, "# %s\n\n", stem), v.fileMode); err != nil {
+	if err := writeNewFile(abs, fmt.Appendf(nil, "# %s\n\n", stem), v.fileMode); err != nil {
 		return NoteMeta{}, err
 	}
 	v.invalidateTextSearchCache()
@@ -1956,7 +1991,7 @@ func (v *Vault) CreateExcalidraw(folder NoteFolder, title, subpath string) (Note
 		return NoteMeta{}, err
 	}
 	if subpath != "" {
-		sub, err := SafeJoin(dir, subpath)
+		sub, err := SafeDestination(dir, subpath)
 		if err != nil {
 			return NoteMeta{}, err
 		}
@@ -1966,7 +2001,7 @@ func (v *Vault) CreateExcalidraw(folder NoteFolder, title, subpath string) (Note
 		return NoteMeta{}, err
 	}
 	abs := uniquePath(dir, title, excalidrawExt)
-	if err := os.WriteFile(abs, []byte(emptyExcalidrawJSON), v.fileMode); err != nil {
+	if err := writeNewFile(abs, []byte(emptyExcalidrawJSON), v.fileMode); err != nil {
 		return NoteMeta{}, err
 	}
 	v.invalidateTextSearchCache()
@@ -2162,7 +2197,7 @@ func (v *Vault) moveBetweenFolders(rel string, target NoteFolder) (NoteMeta, err
 	}
 	destDir := targetRoot
 	if subpath != "" {
-		destDir, err = SafeJoin(targetRoot, subpath)
+		destDir, err = SafeDestination(targetRoot, subpath)
 		if err != nil {
 			return NoteMeta{}, err
 		}
@@ -2267,7 +2302,7 @@ func (v *Vault) MoveNote(rel string, target NoteFolder, targetSubpath string) (N
 		return NoteMeta{}, err
 	}
 	if targetSubpath != "" {
-		sub, err := SafeJoin(destDir, targetSubpath)
+		sub, err := SafeDestination(destDir, targetSubpath)
 		if err != nil {
 			return NoteMeta{}, err
 		}
@@ -2315,7 +2350,7 @@ func (v *Vault) CreateFolder(folder NoteFolder, subpath string) error {
 	if err != nil {
 		return err
 	}
-	abs, err := SafeJoin(base, subpath)
+	abs, err := SafeDestination(base, subpath)
 	if err != nil {
 		return err
 	}
@@ -2386,7 +2421,7 @@ func (v *Vault) RenameFolder(folder NoteFolder, oldSub, newSub string) (string, 
 	if err != nil {
 		return "", err
 	}
-	newAbs, err := SafeJoin(base, newSub)
+	newAbs, err := SafeDestination(base, newSub)
 	if err != nil {
 		return "", err
 	}
@@ -2849,7 +2884,13 @@ func (v *Vault) ImportAsset(notePath, filename string, body io.Reader) (Imported
 	_ = notePath
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	assetsAbs := filepath.Join(v.root, AssetsDir)
+	// The name is fixed, but a link here sends every upload somewhere else.
+	// The listings do not walk a linked folder, so what lands there is not
+	// listed as an attachment anyway.
+	assetsAbs, err := SafeDestination(v.root, AssetsDir)
+	if err != nil {
+		return ImportedAsset{}, err
+	}
 	if err := os.MkdirAll(assetsAbs, v.dirMode); err != nil {
 		return ImportedAsset{}, err
 	}
@@ -2860,7 +2901,7 @@ func (v *Vault) ImportAsset(notePath, filename string, body io.Reader) (Imported
 	ext := filepath.Ext(safeName)
 	stem := strings.TrimSuffix(safeName, ext)
 	abs := uniquePath(assetsAbs, stem, ext)
-	f, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, v.fileMode)
+	f, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_EXCL, v.fileMode)
 	if err != nil {
 		return ImportedAsset{}, err
 	}
@@ -3056,14 +3097,14 @@ func (v *Vault) assertAssetFile(rel string) (string, error) {
 func (v *Vault) cleanAssetTargetDir(targetDir string) (string, error) {
 	normalized := strings.Trim(strings.TrimSpace(filepath.ToSlash(targetDir)), "/")
 	if normalized == "" {
-		return SafeJoin(v.root, AssetsDir)
+		return SafeDestination(v.root, AssetsDir)
 	}
 	for _, part := range strings.Split(normalized, "/") {
 		if part == internalVaultDir {
 			return "", errors.New("cannot move assets into internal ZenNotes files")
 		}
 	}
-	return SafeJoin(v.root, normalized)
+	return SafeDestination(v.root, normalized)
 }
 
 func (v *Vault) assetMetaForAbs(abs string) (AssetMeta, error) {
@@ -3152,27 +3193,45 @@ func defaultTitle() string {
 	return "Untitled-" + time.Now().Format("2006-01-02-150405")
 }
 
+// uniquePath finds a name nothing is using. Lstat, because a dangling link
+// reads as free to Stat and a create would then write through it, to wherever
+// the link names.
 func uniquePath(dir, stem, ext string) string {
 	candidate := filepath.Join(dir, stem+ext)
-	if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
 		return candidate
 	}
 	for i := 2; ; i++ {
 		candidate = filepath.Join(dir, fmt.Sprintf("%s %d%s", stem, i, ext))
-		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
 			return candidate
 		}
 	}
 }
 
+// writeNewFile creates a file that must not already exist. O_EXCL also refuses
+// a link in that place, whatever it names.
+func writeNewFile(abs string, data []byte, mode fs.FileMode) error {
+	f, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(abs)
+		return err
+	}
+	return f.Close()
+}
+
 func uniqueDir(parent, base string) string {
 	candidate := filepath.Join(parent, base)
-	if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
 		return candidate
 	}
 	for i := 2; ; i++ {
 		candidate = filepath.Join(parent, fmt.Sprintf("%s %d", base, i))
-		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
 			return candidate
 		}
 	}
@@ -3184,7 +3243,7 @@ func copyFile(src, dst string, mode fs.FileMode) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return err
 	}

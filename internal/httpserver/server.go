@@ -299,7 +299,7 @@ func writeError(w http.ResponseWriter, err error) {
 		http.Error(w, statusErr.Error(), statusErr.code)
 		return
 	}
-	if errors.Is(err, vault.ErrPathEscape) {
+	if errors.Is(err, vault.ErrPathEscape) || errors.Is(err, vault.ErrThroughSymlink) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -356,7 +356,7 @@ func writeCodedError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.As(err, &statusErr):
 		status, message = statusErr.code, statusErr.Error()
-	case errors.Is(err, vault.ErrPathEscape):
+	case errors.Is(err, vault.ErrPathEscape), errors.Is(err, vault.ErrThroughSymlink):
 		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, os.ErrNotExist):
 		status, message = http.StatusNotFound, err.Error()
@@ -440,6 +440,11 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 		// the clients hide the Template folder row rather than offer a choice
 		// the server forgets.
 		"supportsTemplateFolder": true,
+		// Listings mark a note or asset that is a link (`symlink`). Absent on a
+		// server that lists them unmarked, where a client showing only part of
+		// a vault cannot tell a linked file from a real one, and so cannot
+		// trust a listed path to stay inside what it shows.
+		"supportsSymlinkMarks": true,
 		// Says out loud that a missing file answers 404 rather than 500.
 		// Databases are composed from file reads where "absent" and "failed"
 		// mean opposite things (see remote-absence.ts), and a server that

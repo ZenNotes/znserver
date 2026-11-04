@@ -384,6 +384,10 @@ type NoteMeta struct {
 	AssetEmbeds    []string   `json:"assetEmbeds"`
 	HasAttachments bool       `json:"hasAttachments"`
 	Excerpt        string     `json:"excerpt"`
+	// Symlink marks a note listed from a link rather than a file, in listings
+	// only. The content belongs to whatever the link names, which may be a
+	// folder a scoped client (`zn mcp --allow-path`) must not reach.
+	Symlink bool `json:"symlink,omitempty"`
 }
 
 // NoteContent extends NoteMeta with the raw body.
@@ -425,6 +429,9 @@ type AssetMeta struct {
 	SiblingOrder int    `json:"siblingOrder"`
 	Size         int64  `json:"size"`
 	UpdatedAt    int64  `json:"updatedAt"`
+	// Symlink marks an asset listed from a link rather than a file, as on
+	// NoteMeta.
+	Symlink bool `json:"symlink,omitempty"`
 }
 
 // DeletedAsset — mirrors shared/ipc.ts DeletedAsset. The meta file it is
@@ -450,6 +457,12 @@ type ImportedAsset struct {
 type VaultInfo struct {
 	Root string `json:"root"`
 	Name string `json:"name"`
+	// LinkedSystemFolders are the system folders that are, or sit under, a
+	// symbolic link, as vault-relative paths. They work as usual, but what is in
+	// one may belong to another folder, which a client limiting itself to part
+	// of a vault cannot see from the listings or a read. Always sent, empty when
+	// there are none, so a client can tell "none" from a server that does not say.
+	LinkedSystemFolders []string `json:"linkedSystemFolders"`
 }
 
 // TextSearchCapabilities — mirrors shared/ipc.ts VaultTextSearchCapabilities.
