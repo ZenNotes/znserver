@@ -62,7 +62,7 @@ var (
 	inlineCodeRe  = regexp.MustCompile("`[^`\n]*`")
 	tagRe         = regexp.MustCompile(`(?:^|\s)#(\p{L}[\p{L}\d_/-]*)`)
 	wikilinkRe    = regexp.MustCompile(`(!?)\[\[([^\]|]+?)(?:\\?\|[^\]]+)?\]\]`)
-	linkRe        = regexp.MustCompile(`(!?)\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)`)
+	linkRe        = regexp.MustCompile(`(!?)\[[^\]]*\]\((<[^>]+>|[^)\s]+)(?:\s+"[^"]*")?\)`)
 	embedRe       = regexp.MustCompile(`!\[\[([^\]|]+?)(?:\\?\|[^\]]+)?\]\]`)
 	frontmatterRe = regexp.MustCompile(`(?s)\A---\r?\n(.*?)\r?\n---\r?\n?`)
 	headingRe     = regexp.MustCompile(`(?m)^#{1,6}\s+`)
@@ -206,7 +206,7 @@ func BodyHasLocalAsset(body string) bool {
 		if len(m) < 3 {
 			continue
 		}
-		href := strings.TrimSpace(m[2])
+		href := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(m[2]), "<"), ">")
 		if href == "" || strings.HasPrefix(href, "#") || strings.HasPrefix(href, "//") {
 			continue
 		}

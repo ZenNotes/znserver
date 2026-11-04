@@ -255,8 +255,10 @@ func assetRetarget(reference string, resolution assetReferenceResolution, noteDi
 		}
 	}
 	out := assetEncodeLike(inner, next) + suffix
-	if angled {
-		return "<" + out + ">"
+	// A Markdown destination with a space or a parenthesis only stays a link in angle
+	// brackets, and a rename or a numbered name can bring either in.
+	if angled || (!wikilink && strings.ContainsAny(out, " \t()")) {
+		return "<" + strings.NewReplacer("<", "%3C", ">", "%3E").Replace(out) + ">"
 	}
 	return out
 }
