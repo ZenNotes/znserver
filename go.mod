@@ -2,6 +2,8 @@ module github.com/ZenNotes/znserver
 
 go 1.26.0
 
+toolchain go1.26.10
+
 require (
 	github.com/coder/websocket v1.8.12
 	github.com/fsnotify/fsnotify v1.8.0

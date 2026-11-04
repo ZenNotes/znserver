@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"strings"
 
 	"github.com/ZenNotes/tui/mcpserver"
@@ -65,6 +66,7 @@ func (s *Server) EnableMCP(m config.MCPConfig) error {
 		Credentials:    credentials,
 		AllowedOrigins: m.AllowedOrigins,
 		MaxNoteBytes:   cfg.MaxNoteBytes,
+		MaxToolCalls:   mcpToolCalls(debug.SetMemoryLimit(-1)),
 		Version:        znserver.Version(),
 		Logf:           log.Printf,
 	})
@@ -74,6 +76,18 @@ func (s *Server) EnableMCP(m config.MCPConfig) error {
 	s.mcp = handler
 	s.mcpTokens = tokens
 	return nil
+}
+
+// mcpToolCalls is how many tool calls may run at once. One can hold a listing and a
+// search's matches in memory, so on a small server they take turns more strictly.
+func mcpToolCalls(memoryLimit int64) int {
+	if memoryLimit > 0 && memoryLimit <= 800<<20 {
+		return 1
+	}
+	if memoryLimit > 0 && memoryLimit <= 2<<30 {
+		return 2
+	}
+	return 4
 }
 
 // mcpTokenTaken says a token is an MCP credential's. The server's own token must

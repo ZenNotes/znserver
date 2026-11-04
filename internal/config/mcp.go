@@ -42,7 +42,7 @@ type mcpCredentialsFile struct {
 		TokenSHA256 string          `json:"tokenSha256"`
 		Access      string          `json:"access"`
 		Allow       json.RawMessage `json:"allow"`
-		Deny        []string        `json:"deny"`
+		Deny        json.RawMessage `json:"deny"`
 	} `json:"credentials"`
 }
 
@@ -108,11 +108,11 @@ func mcpCredentialFromEnv() ([]MCPCredential, error) {
 	if len(token) < minMCPTokenLength {
 		return nil, fmt.Errorf("the MCP token has fewer than %d characters; make one with: openssl rand -hex 32", minMCPTokenLength)
 	}
-	allow, err := mcpAllowFromEnv()
+	allow, err := mcpPathsFromEnv("ZENNOTES_MCP_ALLOW_PATHS", "share the whole vault")
 	if err != nil {
 		return nil, err
 	}
-	deny, err := parseMCPPathList("ZENNOTES_MCP_DENY_PATHS")
+	deny, err := mcpPathsFromEnv("ZENNOTES_MCP_DENY_PATHS", "hide nothing")
 	if err != nil {
 		return nil, err
 	}
@@ -125,40 +125,26 @@ func mcpCredentialFromEnv() ([]MCPCredential, error) {
 	}}, nil
 }
 
-// mcpAllowFromEnv reads ZENNOTES_MCP_ALLOW_PATHS. Unset shares the whole vault. Set to
-// nothing, which is how a blank in a Compose file arrives, it is refused: no allow entry
-// shares everything, and whoever set it meant the opposite.
-func mcpAllowFromEnv() ([]string, error) {
-	raw, set := os.LookupEnv("ZENNOTES_MCP_ALLOW_PATHS")
+// mcpPathsFromEnv reads a path list. The server's usual list format splits on commas,
+// which would turn a folder called "My, Folder" into an entry for "My", so it is a JSON
+// array. Unset is no list. Set to nothing, which is how a blank in a Compose file arrives,
+// it is refused: no entry fails open, and whoever set it meant the opposite.
+func mcpPathsFromEnv(name, without string) ([]string, error) {
+	raw, set := os.LookupEnv(name)
 	if !set {
 		return nil, nil
 	}
-	return parseMCPAllow("ZENNOTES_MCP_ALLOW_PATHS", []byte(raw))
+	return parseMCPPaths(name, without, []byte(raw))
 }
 
-// parseMCPAllow reads an allow list that was given, which must name something.
-func parseMCPAllow(name string, raw []byte) ([]string, error) {
-	var allow []string
-	if err := json.Unmarshal(bytes.TrimSpace(raw), &allow); err != nil {
-		return nil, fmt.Errorf(`%s must be a JSON array of paths, such as ["Projects","Areas/Health"]: %w`, name, err)
-	}
-	if len(allow) == 0 {
-		return nil, fmt.Errorf("%s is empty. To share the whole vault, leave it out", name)
-	}
-	return allow, nil
-}
-
-// parseMCPPathList reads a JSON array. The server's usual list format splits on
-// commas, which would turn a folder called "My, Folder" into an allow entry for
-// "My" and could share the wrong folder.
-func parseMCPPathList(name string) ([]string, error) {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return nil, nil
-	}
+// parseMCPPaths reads a list that was given, which must name something.
+func parseMCPPaths(name, without string, raw []byte) ([]string, error) {
 	var paths []string
-	if err := json.Unmarshal([]byte(raw), &paths); err != nil {
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &paths); err != nil {
 		return nil, fmt.Errorf(`%s must be a JSON array of paths, such as ["Projects","Areas/Health"]: %w`, name, err)
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("%s is empty. To %s, leave it out", name, without)
 	}
 	return paths, nil
 }
@@ -199,9 +185,14 @@ func readMCPCredentialsFile(path string) ([]MCPCredential, error) {
 		if err != nil || len(digest) != sha256.Size {
 			return nil, fmt.Errorf("ZENNOTES_MCP_CREDENTIALS_FILE: credential %q needs tokenSha256, the 64 hex digits of the token's SHA-256", entry.Name)
 		}
-		credential := MCPCredential{Name: entry.Name, Access: entry.Access, Deny: entry.Deny}
+		credential := MCPCredential{Name: entry.Name, Access: entry.Access}
 		if entry.Allow != nil {
-			if credential.Allow, err = parseMCPAllow(fmt.Sprintf("ZENNOTES_MCP_CREDENTIALS_FILE: allow on credential %q", entry.Name), entry.Allow); err != nil {
+			if credential.Allow, err = parseMCPPaths(fmt.Sprintf("ZENNOTES_MCP_CREDENTIALS_FILE: allow on credential %q", entry.Name), "share the whole vault", entry.Allow); err != nil {
+				return nil, err
+			}
+		}
+		if entry.Deny != nil {
+			if credential.Deny, err = parseMCPPaths(fmt.Sprintf("ZENNOTES_MCP_CREDENTIALS_FILE: deny on credential %q", entry.Name), "hide nothing", entry.Deny); err != nil {
 				return nil, err
 			}
 		}

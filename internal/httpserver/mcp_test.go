@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -353,6 +354,14 @@ func TestReadNoteChecksTheSizeFirst(t *testing.T) {
 	s.self.ServeHTTP(recorder, request)
 	if recorder.status != http.StatusRequestEntityTooLarge || strings.Contains(recorder.body.String(), "xxx") {
 		t.Errorf("%d %q", recorder.status, recorder.body.String())
+	}
+}
+
+func TestToolCallsFollowTheMemoryLimit(t *testing.T) {
+	for limit, want := range map[int64]int{math.MaxInt64: 4, 0: 4, 700 << 20: 1, 1 << 30: 2, 2 << 30: 2, 4 << 30: 4} {
+		if got := mcpToolCalls(limit); got != want {
+			t.Errorf("%d: %d, want %d", limit, got, want)
+		}
 	}
 }
 

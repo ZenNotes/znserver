@@ -400,7 +400,7 @@ Off unless `ZENNOTES_MCP_ENABLED` is on. See [MCP for AI assistants](#mcp-for-ai
 | `ZENNOTES_MCP_TOKEN_FILE` | none | Read that token from a file instead. Contents are trimmed. |
 | `ZENNOTES_MCP_ACCESS` | none, required | `read`, `comment` or `write`. |
 | `ZENNOTES_MCP_ALLOW_PATHS` | whole vault | JSON array of folders and notes to share, such as `["Projects","Areas/Health"]`. Everything else does not exist for the assistant. Blank, `[]` and `null` are refused: leave it out to share the whole vault. |
-| `ZENNOTES_MCP_DENY_PATHS` | none | JSON array of folders and notes to hide, even inside an allowed one. |
+| `ZENNOTES_MCP_DENY_PATHS` | none | JSON array of folders and notes to hide, even inside an allowed one. A note stays hidden when it is archived or trashed. Blank, `[]` and `null` are refused: leave it out to hide nothing. |
 | `ZENNOTES_MCP_CREDENTIALS_FILE` | none | Several assistants, each with its own token and scope. Cannot be combined with the token, access and path variables. |
 | `ZENNOTES_MCP_ALLOWED_ORIGINS` | none | Comma-separated `Origin` values to accept. Any other `Origin` gets a 403. MCP clients outside a browser send none, so you rarely need this. For a web page to call `/mcp`, its origin must also be in `ZENNOTES_ALLOWED_ORIGINS`, which sends the CORS headers. |
 
@@ -534,12 +534,20 @@ how much of the vault can make that trip.
 - **The vault stays put.** With `ZENNOTES_VAULT_PATH` set, the server refuses to switch
   vaults, so a token can never end up on another one.
 - **Each request stands alone.** `/mcp` issues no session IDs and answers `GET` with 405.
-- **Limits.** At most 32 requests run at once, and 64 MiB of request bodies; past that they
-  get a 503. With several credentials, each may use at most half of the 32. A credential that
+- **Limits.** At most 32 requests are open at once, shared equally between credentials, and a
+  request waits 2 seconds for a place before it gets a 503. Tool calls take turns: 4 at a time,
+  or fewer when the container's memory is small, and a call that waits 30 seconds is told the
+  server is busy. Each credential has its share of 64 MiB of request bodies. A credential that
   can write can send a note up to `ZENNOTES_MAX_NOTE_BYTES` or a 16 MiB attachment. Others can
   send 1 MiB. The note limit applies after JSON encoding, so a note full of quotes or line
-  breaks reaches it at about half the size.
-- **Concurrent edits.** Assistants editing one note take turns. Someone editing it elsewhere
+  breaks reaches it at about half the size. JSON nested more than 64 levels deep and JSON-RPC
+  batches are refused.
+- **Memory.** In a container with a memory limit, the server sets a soft limit of 70% of it at
+  startup, and says so in the log, so that it collects garbage harder before the container
+  would be killed. Set `GOMEMLIMIT` yourself and yours is used.
+- **Read-only containers.** With `read_only: true`, give `/tmp` a tmpfs, because an upload over
+  8 MiB spills to a temp file there.
+- **Concurrent edits.** Assistants editing or moving one note take turns. Someone editing it elsewhere
   at that moment, in the browser or with `zn`, can still be overwritten.
 - **Logs.** A tool call's line holds the credential's name, the tool, the outcome and the
   duration, never tokens, arguments or results. Requests with no valid token are counted, at
@@ -559,6 +567,12 @@ The scope covers ZenNotes tools only: anything else that can read the vault's fo
 or that holds `ZENNOTES_AUTH_TOKEN`, is not restricted by it. It also goes by path. A hard link
 inside a shared folder shows the file it points to, because nothing can tell a hard link from a
 note. A hidden note's name can also show indirectly: creating a note with that name gets `name 2`.
+
+Prefer to deny folders rather than single notes. A deny entry naming one note goes by that name.
+When the note is renamed or moved in the vault's folders, the entry matches nothing, and the
+server then shares nothing with that credential until you fix it. And if archiving a note has to
+give it a new name because the archive already holds one, like `secret 2.md`, the entry does not
+cover the new name.
 
 ## Upgrading and rolling back
 

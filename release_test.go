@@ -56,3 +56,14 @@ func TestImageShipsATempDirectory(t *testing.T) {
 		}
 	}
 }
+
+// Without a toolchain line, a build uses exactly the go line's release, and misses fixes.
+func TestGoModNamesAToolchain(t *testing.T) {
+	raw, err := os.ReadFile("go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "\ntoolchain go1.26.") {
+		t.Error("go.mod has no toolchain line")
+	}
+}
