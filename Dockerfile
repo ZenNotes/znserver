@@ -22,6 +22,6 @@ ENV ZENNOTES_BIND=0.0.0.0:7878 \
 USER 65532:65532
 EXPOSE 7878
 VOLUME ["/workspace", "/data"]
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=1s --retries=3 \
     CMD ["/zennotes-server", "healthcheck"]
 ENTRYPOINT ["/zennotes-server"]

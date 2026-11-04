@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -27,19 +28,19 @@ func runHealthcheck() int {
 }
 
 // healthzURL is /healthz as seen from inside the container. A wildcard bind
-// (0.0.0.0, [::], :7878) is a place to listen, not an address to call.
+// (0.0.0.0, [::], :7878) is a place to listen, not an address to call. Go's [::]
+// listener also takes IPv4, and ::1 does not exist where IPv6 is off, so every
+// wildcard calls 127.0.0.1.
 func healthzURL(bind, basePath string) string {
 	host, port, err := net.SplitHostPort(bind)
 	if err != nil {
-		host, port = bind, "7878"
+		host, port = strings.Trim(bind, "[]"), "7878"
 	}
-	switch strings.Trim(host, "[]") {
-	case "", "0.0.0.0":
+	if host == "" || net.ParseIP(host).IsUnspecified() {
 		host = "127.0.0.1"
-	case "::":
-		host = "::1"
 	}
-	return "http://" + net.JoinHostPort(strings.Trim(host, "[]"), port) + basePath + "/healthz"
+	u := url.URL{Scheme: "http", Host: net.JoinHostPort(host, port), Path: basePath + "/healthz"}
+	return u.String()
 }
 
 // probeHealthz ignores any HTTP proxy in the environment, which could answer

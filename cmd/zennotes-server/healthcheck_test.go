@@ -1,8 +1,10 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,12 +18,14 @@ func TestHealthzURLCallsAnAddressNotAWildcard(t *testing.T) {
 	}{
 		{"0.0.0.0:7878", "", "http://127.0.0.1:7878/healthz"},
 		{":9000", "", "http://127.0.0.1:9000/healthz"},
-		{"[::]:7878", "", "http://[::1]:7878/healthz"},
+		{"[::]:7878", "", "http://127.0.0.1:7878/healthz"},
 		{"127.0.0.1:7878", "", "http://127.0.0.1:7878/healthz"},
 		{"[::1]:7878", "", "http://[::1]:7878/healthz"},
 		{"10.0.0.5:7878", "", "http://10.0.0.5:7878/healthz"},
 		{"localhost:7878", "", "http://localhost:7878/healthz"},
 		{"0.0.0.0:7878", "/zen", "http://127.0.0.1:7878/zen/healthz"},
+		{"0.0.0.0:7878", "/my notes", "http://127.0.0.1:7878/my%20notes/healthz"},
+		{"0.0.0.0:7878", "/100%", "http://127.0.0.1:7878/100%25/healthz"},
 	}
 	for _, tc := range cases {
 		if got := healthzURL(tc.bind, tc.basePath); got != tc.want {
@@ -73,10 +77,30 @@ func TestProbeHealthzGivesUpOnAHungServer(t *testing.T) {
 // The real router, with a token set and a base path: /healthz has to stay open,
 // or every authenticated deployment would read as unhealthy.
 func TestProbeHealthzReachesTheRealRouterWithoutAToken(t *testing.T) {
-	cfg := config.Config{AuthToken: "secret", BasePath: "/zen"}
-	srv := httptest.NewServer(httpserver.New(nil, nil, nil, cfg).Router())
+	for _, basePath := range []string{"/zen", "/my notes", "/100%"} {
+		cfg := config.Config{AuthToken: "secret", BasePath: basePath}
+		srv := httptest.NewServer(httpserver.New(nil, nil, nil, cfg).Router())
+		url := healthzURL(strings.TrimPrefix(srv.URL, "http://"), basePath)
+		err := probeHealthz(url, time.Second)
+		srv.Close()
+		if err != nil {
+			t.Errorf("base path %q: %v", basePath, err)
+		}
+	}
+}
+
+// The wildcard case relies on a [::] listener also answering on IPv4.
+func TestProbeHealthzReachesAnIPv6WildcardListener(t *testing.T) {
+	ln, err := net.Listen("tcp", "[::]:0")
+	if err != nil {
+		t.Skipf("no IPv6 here: %v", err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Listener.Close()
+	srv.Listener = ln
+	srv.Start()
 	defer srv.Close()
-	if err := probeHealthz(srv.URL+"/zen/healthz", time.Second); err != nil {
-		t.Fatalf("/healthz behind auth or the base path: %v", err)
+	if err := probeHealthz(healthzURL(ln.Addr().String(), ""), time.Second); err != nil {
+		t.Fatal(err)
 	}
 }

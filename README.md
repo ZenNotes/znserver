@@ -133,6 +133,11 @@ The check means the server is answering, not that the vault is readable. From
 outside the container, `GET /healthz` returns `{"ok":true}` without
 authentication.
 
+A proxy that reads Docker health, such as Traefik, routes to the container only
+once it is healthy. The first check runs a second after start on Docker 25 or
+later, and after 30 seconds on older versions. To opt out, set
+`healthcheck: { disable: true }` in Compose.
+
 ### Image tags
 
 | Tag | Meaning |
