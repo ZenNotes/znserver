@@ -1285,7 +1285,10 @@ func (v *Vault) ListNotes() ([]NoteMeta, error) {
 				parent := filepath.Dir(path)
 				if filepath.Clean(parent) == filepath.Clean(folderRoot) {
 					if shouldHidePrimaryRootName(d.Name(), hiddenRootNames) {
-						return filepath.SkipDir
+						// Not SkipDir: on anything but a directory, which is what
+						// WalkDir calls a link, that skips the rest of the parent,
+						// and the parent here is the whole vault root.
+						return nil
 					}
 				}
 			}
