@@ -318,7 +318,7 @@ func TestMCPDeclinesANoteTooLargeToHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := file.Truncate(mcpResponseLimit(s.currentConfig()) + 1); err != nil {
+	if err := file.Truncate(s.mcpResponseBytes + 1); err != nil {
 		t.Fatal(err)
 	}
 	file.Close()
@@ -354,6 +354,32 @@ func TestReadNoteChecksTheSizeFirst(t *testing.T) {
 	s.self.ServeHTTP(recorder, request)
 	if recorder.status != http.StatusRequestEntityTooLarge || strings.Contains(recorder.body.String(), "xxx") {
 		t.Errorf("%d %q", recorder.status, recorder.body.String())
+	}
+}
+
+func TestOpenRequestsFollowTheMemoryLimit(t *testing.T) {
+	for limit, want := range map[int64]int{math.MaxInt64: 32, 0: 32, 700 << 20: 8, 800 << 20: 8, 1 << 30: 16, 2 << 30: 16, 4 << 30: 32} {
+		if got := mcpInFlight(limit); got != want {
+			t.Errorf("%d: %d, want %d", limit, got, want)
+		}
+	}
+}
+
+func TestResponseLimitFollowsTheMemoryLimit(t *testing.T) {
+	cfg := config.Config{MaxNoteBytes: 10 << 20}
+	for limit, want := range map[int64]int64{
+		math.MaxInt64: 64 << 20,
+		358 << 20:     358 << 20 / 16,
+		100 << 20:     16 << 20,
+		716 << 20:     716 << 20 / 16,
+		16 << 30:      64 << 20,
+	} {
+		if got := mcpResponseLimit(cfg, limit); got != want {
+			t.Errorf("memory %d MiB: %d MiB, want %d MiB", limit>>20, got>>20, want>>20)
+		}
+	}
+	if got := mcpResponseLimit(config.Config{MaxNoteBytes: 100 << 20}, math.MaxInt64); got != 200<<20 {
+		t.Errorf("a large note limit: %d", got)
 	}
 }
 

@@ -534,14 +534,18 @@ how much of the vault can make that trip.
 - **The vault stays put.** With `ZENNOTES_VAULT_PATH` set, the server refuses to switch
   vaults, so a token can never end up on another one.
 - **Each request stands alone.** `/mcp` issues no session IDs and answers `GET` with 405.
-- **Limits.** At most 32 requests are open at once, shared equally between credentials, and a
-  request waits 2 seconds for a place before it gets a 503. Tool calls take turns: 4 at a time,
-  or fewer when the container's memory is small, and a call that waits 30 seconds is told the
-  server is busy. Each credential has its share of 64 MiB of request bodies. A credential that
-  can write can send a note up to `ZENNOTES_MAX_NOTE_BYTES` or a 16 MiB attachment. Others can
-  send 1 MiB. The note limit applies after JSON encoding, so a note full of quotes or line
-  breaks reaches it at about half the size. JSON nested more than 64 levels deep and JSON-RPC
-  batches are refused.
+- **Limits.** At most 32 requests are open at once, or 16 with a memory limit up to 2 GiB and 8
+  up to 800 MiB, shared equally between credentials. A request waits 2 seconds for a place before
+  it gets a 503, so a small server under a burst answers some requests with a 503: at 512 MiB, 16
+  reads of a 9 MiB note at once get about 10 answers and 6 503s. Clients should retry. Tool calls
+  take turns: 4 at a time, or fewer when the container's memory is small, and a call that waits 30
+  seconds is told the server is busy. One search returns at most 1,000 matches. Each credential
+  has its share of 64 MiB of request bodies. A credential that can write can send a note up to
+  `ZENNOTES_MAX_NOTE_BYTES` or a 16 MiB attachment. Others can send 1 MiB. The note limit applies
+  after JSON encoding, so a note full of quotes or line breaks reaches it at about half the size.
+  JSON nested more than 64 levels deep and JSON-RPC batches are refused. A tool cannot read a note
+  larger than the larger of 64 MiB and twice `ZENNOTES_MAX_NOTE_BYTES`, or less in a small container,
+  down to 16 MiB.
 - **Memory.** In a container with a memory limit, the server sets a soft limit of 70% of it at
   startup, and says so in the log, so that it collects garbage harder before the container
   would be killed. Set `GOMEMLIMIT` yourself and yours is used.
@@ -567,6 +571,10 @@ The scope covers ZenNotes tools only: anything else that can read the vault's fo
 or that holds `ZENNOTES_AUTH_TOKEN`, is not restricted by it. It also goes by path. A hard link
 inside a shared folder shows the file it points to, because nothing can tell a hard link from a
 note. A hidden note's name can also show indirectly: creating a note with that name gets `name 2`.
+
+A search through a path scope filters what the server finds, and the server stops at 50,000
+matching lines, so a shared note can be missed if more than that come first in folders the
+credential cannot see.
 
 Prefer to deny folders rather than single notes. A deny entry naming one note goes by that name.
 When the note is renamed or moved in the vault's folders, the entry matches nothing, and the

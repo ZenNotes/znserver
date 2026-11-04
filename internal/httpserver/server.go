@@ -55,6 +55,8 @@ type Server struct {
 	// unless MCP is on, in which case /mcp is not routed at all.
 	mcp       http.Handler
 	mcpTokens map[[sha256.Size]byte]bool
+	// mcpResponseBytes is mcpResponseLimit, worked out once.
+	mcpResponseBytes int64
 	// self is the finished router, which the MCP tools call in-process.
 	self http.Handler
 }

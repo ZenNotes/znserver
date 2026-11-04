@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -24,8 +25,14 @@ const mcpInternalBase = "http://zennotes.internal"
 
 // mcpResponseLimit is the largest answer an in-process call may hold in memory. A note
 // can be larger than the server would accept today, if it was put there some other way.
-func mcpResponseLimit(cfg config.Config) int64 {
-	return max(64<<20, 2*cfg.MaxNoteBytes)
+// An answer can sit in memory about twice over until its client reads it, one for each
+// open request, so a memory limit holds this down, to no less than a typical large note.
+func mcpResponseLimit(cfg config.Config, memoryLimit int64) int64 {
+	limit := max(64<<20, 2*cfg.MaxNoteBytes)
+	if memoryLimit > 0 && memoryLimit < math.MaxInt64 {
+		limit = min(limit, max(16<<20, memoryLimit/int64(2*mcpInFlight(memoryLimit))))
+	}
+	return limit
 }
 
 // EnableMCP turns on the built-in MCP endpoint, for Router to route at /mcp. An
@@ -60,13 +67,16 @@ func (s *Server) EnableMCP(m config.MCPConfig) error {
 			Deny:        c.Deny,
 		})
 	}
+	memoryLimit := debug.SetMemoryLimit(-1)
+	s.mcpResponseBytes = mcpResponseLimit(cfg, memoryLimit)
 	handler, err := mcpserver.NewHandler(mcpserver.Options{
 		Transport:      mcpTransport{s},
 		BaseURL:        mcpInternalBase + cfg.BasePath,
 		Credentials:    credentials,
 		AllowedOrigins: m.AllowedOrigins,
 		MaxNoteBytes:   cfg.MaxNoteBytes,
-		MaxToolCalls:   mcpToolCalls(debug.SetMemoryLimit(-1)),
+		MaxToolCalls:   mcpToolCalls(memoryLimit),
+		MaxInFlight:    mcpInFlight(memoryLimit),
 		Version:        znserver.Version(),
 		Logf:           log.Printf,
 	})
@@ -88,6 +98,18 @@ func mcpToolCalls(memoryLimit int64) int {
 		return 2
 	}
 	return 4
+}
+
+// mcpInFlight is how many MCP requests may be open at once. A tool's answer stays in
+// memory until its client reads it, which a client can choose not to do.
+func mcpInFlight(memoryLimit int64) int {
+	if memoryLimit > 0 && memoryLimit <= 800<<20 {
+		return 8
+	}
+	if memoryLimit > 0 && memoryLimit <= 2<<30 {
+		return 16
+	}
+	return 32
 }
 
 // mcpTokenTaken says a token is an MCP credential's. The server's own token must
@@ -162,7 +184,7 @@ func (t mcpTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if !mcpRouteAllowed(req.Method, path) {
 		return mcpResponse(req, http.StatusForbidden, "not available over MCP"), nil
 	}
-	limit := mcpResponseLimit(cfg)
+	limit := s.mcpResponseBytes
 	// The context holds the outer request's chi route state, which would route this
 	// call straight back to /mcp, where the server's token gets a 401.
 	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, nil)
