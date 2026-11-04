@@ -51,15 +51,19 @@ func ExtractAssetEmbeds(body string) []string {
 
 // Regexes below mirror the TS extractors in src/main/vault.ts. They are
 // intentionally the same shape so the extracted metadata matches the
-// desktop build byte-for-byte for the common cases.
+// desktop build byte-for-byte for the common cases. A table writes a wikilink's
+// separator as `\|`, the escape GFM needs to keep the pipe in its cell, so the
+// separator takes an optional backslash: the app never creates a name with one,
+// and without this the target of `[[C\|d]]` reads as `C\`. A file named `C\.md`
+// made elsewhere is not what such a link reaches.
 
 var (
 	fenceLineRe   = regexp.MustCompile("^[ \t]*(`{3,}|~{3,})(.*)$")
 	inlineCodeRe  = regexp.MustCompile("`[^`\n]*`")
 	tagRe         = regexp.MustCompile(`(?:^|\s)#(\p{L}[\p{L}\d_/-]*)`)
-	wikilinkRe    = regexp.MustCompile(`(!?)\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]`)
+	wikilinkRe    = regexp.MustCompile(`(!?)\[\[([^\]|]+?)(?:\\?\|[^\]]+)?\]\]`)
 	linkRe        = regexp.MustCompile(`(!?)\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)`)
-	embedRe       = regexp.MustCompile(`!\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]`)
+	embedRe       = regexp.MustCompile(`!\[\[([^\]|]+?)(?:\\?\|[^\]]+)?\]\]`)
 	frontmatterRe = regexp.MustCompile(`(?s)\A---\r?\n(.*?)\r?\n---\r?\n?`)
 	headingRe     = regexp.MustCompile(`(?m)^#{1,6}\s+`)
 	imageMdRe     = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)
@@ -176,7 +180,8 @@ func ExtractWikilinks(body string) []string {
 		if len(m) >= 3 {
 			bang := m[1]
 			target := strings.TrimSpace(m[2])
-			if target == "" {
+			// `[[\|d]]` and `[[\]]` name nothing.
+			if target == "" || target == `\` {
 				continue
 			}
 			if bang == "!" && localAssetTargetKind(target) != "" {

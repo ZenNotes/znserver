@@ -27,7 +27,7 @@ const (
 	internalVaultDir      = ".zennotes"
 	vaultSettingsFile     = "vault.json"
 	noteMetaCacheFile     = "note-meta-cache-v1.json"
-	noteMetaCacheVersion  = 2
+	noteMetaCacheVersion  = 5 // the desktop writes this file too, as 3 and 4: stay off its numbers
 	noteCommentsDir       = "comments"
 	noteCommentsSuffix    = ".comments.json"
 	noteMetaReadLimit     = 64
