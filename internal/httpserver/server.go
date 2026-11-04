@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -49,9 +50,8 @@ type Server struct {
 
 	// Set once by EnableMCP before Router runs, and read-only after. mcp stays nil
 	// unless MCP is on, in which case /mcp is not routed at all.
-	mcp          http.Handler
-	mcpTokens    map[[sha256.Size]byte]bool
-	mcpVaultRoot string
+	mcp       http.Handler
+	mcpTokens map[[sha256.Size]byte]bool
 	// self is the finished router, which the MCP tools call in-process.
 	self http.Handler
 }
@@ -691,6 +691,16 @@ func (s *Server) assetsExists(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) readNote(w http.ResponseWriter, r *http.Request) {
 	rel := r.URL.Query().Get("path")
+	if _, isMCP := r.Context().Value(mcpResponseLimitKey{}).(int64); isMCP {
+		size, err := s.currentVault().NoteSize(rel)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if tooLargeForMCP(w, r, size) {
+			return
+		}
+	}
 	note, err := s.currentVault().ReadNote(rel)
 	if err != nil {
 		writeError(w, err)
@@ -1030,7 +1040,18 @@ func (s *Server) searchCapabilities(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) searchText(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
-	matches, err := s.currentVault().SearchText(q)
+	// A scoped MCP client filters what it gets, so it must see past the usual cap for a
+	// visible match not to be crowded out by hidden ones.
+	limit := vault.DefaultTextSearchLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 || parsed > vault.MaxTextSearchLimit {
+			http.Error(w, "limit must be between 1 and "+strconv.Itoa(vault.MaxTextSearchLimit), http.StatusBadRequest)
+			return
+		}
+		limit = parsed
+	}
+	matches, err := s.currentVault().SearchTextUpTo(q, limit)
 	if err != nil {
 		writeError(w, err)
 		return

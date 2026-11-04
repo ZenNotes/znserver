@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: 1.26.x
       - run: go vet ./...
       - run: go test ./...
       - run: go build -trimpath -o bin/server-api ./cmd/zennotes-server
@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: 1.26.x
       - run: go build -trimpath -o "$RUNNER_TEMP/zennotes-server" ./cmd/zennotes-server
       - run: git clone --depth 1 --branch "$(go list -m -f '{{.Version}}' github.com/ZenNotes/tui)" https://github.com/ZenNotes/tui.git "$RUNNER_TEMP/tui"
       - run: go test -count=1 -run 'ThroughHTTP|TestHTTPMCP' ./internal/mcp

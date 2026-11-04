@@ -1627,6 +1627,21 @@ func (v *Vault) readMetaWithPreambleFolder(
 	return meta, nil
 }
 
+// NoteSize is how large a note is on disk, without reading it.
+func (v *Vault) NoteSize(rel string) (int64, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	abs, err := SafeJoin(v.root, rel)
+	if err != nil {
+		return 0, err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
 func (v *Vault) ReadNote(rel string) (NoteContent, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -2858,7 +2873,19 @@ func (v *Vault) textSearchCandidatesLocked() ([]textSearchCandidate, error) {
 	return candidates, nil
 }
 
+// DefaultTextSearchLimit is how many matches a search returns unless told otherwise,
+// and MaxTextSearchLimit the most it may be told.
+const (
+	DefaultTextSearchLimit = 200
+	MaxTextSearchLimit     = 50000
+)
+
 func (v *Vault) SearchText(query string) ([]TextSearchMatch, error) {
+	return v.SearchTextUpTo(query, DefaultTextSearchLimit)
+}
+
+// SearchTextUpTo is SearchText returning at most limit matches.
+func (v *Vault) SearchTextUpTo(query string, limit int) ([]TextSearchMatch, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	query = strings.TrimSpace(query)
@@ -2888,7 +2915,7 @@ func (v *Vault) SearchText(query string) ([]TextSearchMatch, error) {
 			continue
 		}
 		out = append(out, candidate.match)
-		if len(out) >= 200 {
+		if len(out) >= limit {
 			break
 		}
 	}

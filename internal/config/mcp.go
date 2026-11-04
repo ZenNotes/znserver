@@ -38,11 +38,11 @@ type MCPConfig struct {
 type mcpCredentialsFile struct {
 	Version     int `json:"version"`
 	Credentials []struct {
-		Name        string   `json:"name"`
-		TokenSHA256 string   `json:"tokenSha256"`
-		Access      string   `json:"access"`
-		Allow       []string `json:"allow"`
-		Deny        []string `json:"deny"`
+		Name        string          `json:"name"`
+		TokenSHA256 string          `json:"tokenSha256"`
+		Access      string          `json:"access"`
+		Allow       json.RawMessage `json:"allow"`
+		Deny        []string        `json:"deny"`
 	} `json:"credentials"`
 }
 
@@ -58,6 +58,11 @@ var mcpCredentialName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 func LoadMCP() (MCPConfig, error) {
 	if !envEnabled("ZENNOTES_MCP_ENABLED") {
 		return MCPConfig{}, nil
+	}
+	// The vault an MCP token opens must not change, by a switch or by the host config
+	// on the next start. This variable makes the server refuse a switch.
+	if strings.TrimSpace(os.Getenv("ZENNOTES_VAULT_PATH")) == "" {
+		return MCPConfig{}, errors.New("ZENNOTES_MCP_ENABLED needs ZENNOTES_VAULT_PATH set too, so that a token cannot end up on another vault")
 	}
 	origins := parseListEnv("ZENNOTES_MCP_ALLOWED_ORIGINS")
 	for _, origin := range origins {
@@ -103,7 +108,7 @@ func mcpCredentialFromEnv() ([]MCPCredential, error) {
 	if len(token) < minMCPTokenLength {
 		return nil, fmt.Errorf("the MCP token has fewer than %d characters; make one with: openssl rand -hex 32", minMCPTokenLength)
 	}
-	allow, err := parseMCPPathList("ZENNOTES_MCP_ALLOW_PATHS")
+	allow, err := mcpAllowFromEnv()
 	if err != nil {
 		return nil, err
 	}
@@ -112,12 +117,35 @@ func mcpCredentialFromEnv() ([]MCPCredential, error) {
 		return nil, err
 	}
 	return []MCPCredential{{
-		Name:        "default",
+		Name:        "assistant",
 		TokenSHA256: sha256.Sum256([]byte(token)),
 		Access:      os.Getenv("ZENNOTES_MCP_ACCESS"),
 		Allow:       allow,
 		Deny:        deny,
 	}}, nil
+}
+
+// mcpAllowFromEnv reads ZENNOTES_MCP_ALLOW_PATHS. Unset shares the whole vault. Set to
+// nothing, which is how a blank in a Compose file arrives, it is refused: no allow entry
+// shares everything, and whoever set it meant the opposite.
+func mcpAllowFromEnv() ([]string, error) {
+	raw, set := os.LookupEnv("ZENNOTES_MCP_ALLOW_PATHS")
+	if !set {
+		return nil, nil
+	}
+	return parseMCPAllow("ZENNOTES_MCP_ALLOW_PATHS", []byte(raw))
+}
+
+// parseMCPAllow reads an allow list that was given, which must name something.
+func parseMCPAllow(name string, raw []byte) ([]string, error) {
+	var allow []string
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &allow); err != nil {
+		return nil, fmt.Errorf(`%s must be a JSON array of paths, such as ["Projects","Areas/Health"]: %w`, name, err)
+	}
+	if len(allow) == 0 {
+		return nil, fmt.Errorf("%s is empty. To share the whole vault, leave it out", name)
+	}
+	return allow, nil
 }
 
 // parseMCPPathList reads a JSON array. The server's usual list format splits on
@@ -171,7 +199,12 @@ func readMCPCredentialsFile(path string) ([]MCPCredential, error) {
 		if err != nil || len(digest) != sha256.Size {
 			return nil, fmt.Errorf("ZENNOTES_MCP_CREDENTIALS_FILE: credential %q needs tokenSha256, the 64 hex digits of the token's SHA-256", entry.Name)
 		}
-		credential := MCPCredential{Name: entry.Name, Access: entry.Access, Allow: entry.Allow, Deny: entry.Deny}
+		credential := MCPCredential{Name: entry.Name, Access: entry.Access, Deny: entry.Deny}
+		if entry.Allow != nil {
+			if credential.Allow, err = parseMCPAllow(fmt.Sprintf("ZENNOTES_MCP_CREDENTIALS_FILE: allow on credential %q", entry.Name), entry.Allow); err != nil {
+				return nil, err
+			}
+		}
 		copy(credential.TokenSHA256[:], digest)
 		credentials = append(credentials, credential)
 	}

@@ -395,14 +395,14 @@ Off unless `ZENNOTES_MCP_ENABLED` is on. See [MCP for AI assistants](#mcp-for-ai
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ZENNOTES_MCP_ENABLED` | off | Serve MCP at `/mcp`. While off, the route does not exist and the variables below are not read. |
+| `ZENNOTES_MCP_ENABLED` | off | Serve MCP at `/mcp`. Needs `ZENNOTES_AUTH_TOKEN` and `ZENNOTES_VAULT_PATH`. While off, the route does not exist and the variables below are not read. |
 | `ZENNOTES_MCP_TOKEN` | none | The MCP token for one assistant: 32 characters or more, different from `ZENNOTES_AUTH_TOKEN`. |
 | `ZENNOTES_MCP_TOKEN_FILE` | none | Read that token from a file instead. Contents are trimmed. |
 | `ZENNOTES_MCP_ACCESS` | none, required | `read`, `comment` or `write`. |
-| `ZENNOTES_MCP_ALLOW_PATHS` | whole vault | JSON array of folders and notes to share, such as `["Projects","Areas/Health"]`. Everything else does not exist for the assistant. |
+| `ZENNOTES_MCP_ALLOW_PATHS` | whole vault | JSON array of folders and notes to share, such as `["Projects","Areas/Health"]`. Everything else does not exist for the assistant. Blank, `[]` and `null` are refused: leave it out to share the whole vault. |
 | `ZENNOTES_MCP_DENY_PATHS` | none | JSON array of folders and notes to hide, even inside an allowed one. |
 | `ZENNOTES_MCP_CREDENTIALS_FILE` | none | Several assistants, each with its own token and scope. Cannot be combined with the token, access and path variables. |
-| `ZENNOTES_MCP_ALLOWED_ORIGINS` | none | Comma-separated `Origin` values to accept. Any other `Origin` gets a 403. MCP clients outside a browser send none, so you rarely need this. Web pages still cannot call `/mcp`, because it sends no CORS headers for them. |
+| `ZENNOTES_MCP_ALLOWED_ORIGINS` | none | Comma-separated `Origin` values to accept. Any other `Origin` gets a 403. MCP clients outside a browser send none, so you rarely need this. For a web page to call `/mcp`, its origin must also be in `ZENNOTES_ALLOWED_ORIGINS`, which sends the CORS headers. |
 
 The startup log prints the effective vault, bind, auth, TLS, CORS, and MCP settings,
 so you can confirm what the server actually loaded.
@@ -467,7 +467,9 @@ services:
       - ./data:/data
 ```
 
-Make the token with `openssl rand -hex 32`. Then, for a client that can send a
+Make the token with `openssl rand -hex 32`. Paths are the ones `zn` and the app show: in a
+vault with an inbox folder, that is `["inbox/Projects"]`, and an entry that matches nothing
+shares nothing. Then, for a client that can send a
 header, such as Claude Code:
 
 ```sh
@@ -499,7 +501,8 @@ printf %s "$TOKEN" | shasum -a 256
 
 The token alone decides the scope, and nothing a client sends can widen it. To change
 or revoke a credential, edit the file and restart the server. `name` appears in the
-log.
+log and signs the credential's comments. Use `openssl rand -hex 32` here too: the server only
+sees the hash, so it cannot tell you a token is too short.
 
 ### Through OpenAI's Secure MCP Tunnel
 
@@ -524,30 +527,38 @@ how much of the vault can make that trip.
   the browser app and login all refuse it. The server's token and browser sessions
   do not open `/mcp`, so a full-access assistant needs an MCP token as well. Rotating
   the server's token leaves MCP working, and it cannot be rotated to an MCP token.
-- **The server refuses to start** with MCP on if there is no `ZENNOTES_AUTH_TOKEN`, a
-  token is too short or is the server's own, access is not stated, or a path, a list or
-  the credentials file is invalid. A misspelled field in the file is an error too, so it
-  can never leave a credential seeing more than you meant.
-- **Vault switches.** If the server moves to another vault, every tool call answers that
-  nothing is shared until it restarts or switches back. Setting `ZENNOTES_VAULT_PATH`
-  prevents a switch.
+- **The server refuses to start** with MCP on if there is no `ZENNOTES_AUTH_TOKEN` or
+  `ZENNOTES_VAULT_PATH`, a token is too short or is the server's own, access is not stated,
+  or a path, a list or the credentials file is invalid. A misspelled field in the file is an
+  error too, so it can never leave a credential seeing more than you meant.
+- **The vault stays put.** With `ZENNOTES_VAULT_PATH` set, the server refuses to switch
+  vaults, so a token can never end up on another one.
 - **Each request stands alone.** `/mcp` issues no session IDs and answers `GET` with 405.
-- **Limits.** At most 32 requests run at once; the rest get a 503. A request can hold a
-  note up to `ZENNOTES_MAX_NOTE_BYTES` or a 16 MiB attachment.
-- **Logs** hold the credential's name, the tool, the outcome and the duration, and never
-  tokens, arguments, paths or results.
+- **Limits.** At most 32 requests run at once, and 64 MiB of request bodies; past that they
+  get a 503. With several credentials, each may use at most half of the 32. A credential that
+  can write can send a note up to `ZENNOTES_MAX_NOTE_BYTES` or a 16 MiB attachment. Others can
+  send 1 MiB. The note limit applies after JSON encoding, so a note full of quotes or line
+  breaks reaches it at about half the size.
+- **Concurrent edits.** Assistants editing one note take turns. Someone editing it elsewhere
+  at that moment, in the browser or with `zn`, can still be overwritten.
+- **Logs.** A tool call's line holds the credential's name, the tool, the outcome and the
+  duration, never tokens, arguments or results. Requests with no valid token are counted, at
+  most once a minute. Other log lines can name a path, such as a failed operation or a deny
+  entry that matches nothing.
 
 **Not in this version:**
 
-- An assistant restricted to certain paths cannot rename notes, or read, rename, move
-  or copy attachments. Renames are out because the server rewrites links in every note,
+- An assistant restricted to certain paths is not offered note renames, or attachment reads,
+  renames, moves or copies. Renames are out because the server rewrites links in every note,
   including ones the assistant cannot see. This is the same as `zn mcp` against a server.
 - Edits made over MCP do not appear in agent edit review.
 - OAuth. ChatGPT's and Claude's ordinary connectors need it and a public URL, so they
   cannot use a static token. Use the tunnel, or a client that can send a header.
 
 The scope covers ZenNotes tools only: anything else that can read the vault's folder,
-or that holds `ZENNOTES_AUTH_TOKEN`, is not restricted by it.
+or that holds `ZENNOTES_AUTH_TOKEN`, is not restricted by it. It also goes by path. A hard link
+inside a shared folder shows the file it points to, because nothing can tell a hard link from a
+note. A hidden note's name can also show indirectly: creating a note with that name gets `name 2`.
 
 ## Upgrading and rolling back
 

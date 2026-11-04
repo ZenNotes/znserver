@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/ZenNotes/tui/mcpserver"
@@ -22,7 +21,11 @@ import (
 // or, through mcpserver, a client.
 const mcpInternalBase = "http://zennotes.internal"
 
-const mcpVaultSwitched = "The ZenNotes server switched to another vault, so nothing is shared until it restarts."
+// mcpResponseLimit is the largest answer an in-process call may hold in memory. A note
+// can be larger than the server would accept today, if it was put there some other way.
+func mcpResponseLimit(cfg config.Config) int64 {
+	return max(64<<20, 2*cfg.MaxNoteBytes)
+}
 
 // EnableMCP turns on the built-in MCP endpoint, for Router to route at /mcp. An
 // error means the server should not start.
@@ -56,16 +59,9 @@ func (s *Server) EnableMCP(m config.MCPConfig) error {
 			Deny:        c.Deny,
 		})
 	}
-	s.mcpVaultRoot = s.currentVault().Root()
 	handler, err := mcpserver.NewHandler(mcpserver.Options{
-		Transport: mcpTransport{s},
-		BaseURL:   mcpInternalBase + cfg.BasePath,
-		Available: func() error {
-			if s.mcpVaultMoved() {
-				return errors.New(mcpVaultSwitched)
-			}
-			return nil
-		},
+		Transport:      mcpTransport{s},
+		BaseURL:        mcpInternalBase + cfg.BasePath,
 		Credentials:    credentials,
 		AllowedOrigins: m.AllowedOrigins,
 		MaxNoteBytes:   cfg.MaxNoteBytes,
@@ -80,22 +76,6 @@ func (s *Server) EnableMCP(m config.MCPConfig) error {
 	return nil
 }
 
-// mcpVaultMoved says the server is serving another vault than the one MCP started
-// on. An agent that read notes in one vault and writes after a switch would change
-// a note at the same path in the other. MCP requests have no client to warn, since
-// each stands alone, so nothing is shared until the server restarts or switches back.
-func (s *Server) mcpVaultMoved() bool {
-	current := s.currentVault().Root()
-	if current == s.mcpVaultRoot {
-		return false
-	}
-	// A vault switched back to can be spelled differently than the one started on,
-	// through /var and /private/var on macOS for one.
-	currentInfo, currentErr := os.Stat(current)
-	startInfo, startErr := os.Stat(s.mcpVaultRoot)
-	return currentErr != nil || startErr != nil || !os.SameFile(currentInfo, startInfo)
-}
-
 // mcpTokenTaken says a token is an MCP credential's. The server's own token must
 // never become one, or it would open /mcp and the REST API both.
 func (s *Server) mcpTokenTaken(token string) bool {
@@ -108,17 +88,50 @@ func (s *Server) mcpTokenTaken(token string) bool {
 // holds the server's token, read fresh on each call, so rotation just works.
 type mcpTransport struct{ s *Server }
 
-// mcpRefusedRoute names API routes no MCP tool has any business calling. No tool
-// does; this is here so that a bug in a tool still cannot switch the vault, change
-// the server's token or browse the filesystem.
-func mcpRefusedRoute(method, path string) bool {
-	path = strings.TrimPrefix(path, "/api")
-	for _, prefix := range []string{"/session", "/vault/select", "/fs/", "/watch", "/demo/", "/workflows"} {
-		if strings.HasPrefix(path, prefix) {
-			return true
-		}
-	}
-	return method != http.MethodGet && path == "/vault/settings"
+// mcpRoutes are the API routes the MCP tools call. Anything else is refused, so a bug
+// in a tool cannot switch the vault, change the server's token, run a workflow or browse
+// the filesystem, and a route added to the server later stays out until it is added here.
+var mcpRoutes = map[string]bool{
+	"GET /capabilities":       true,
+	"GET /vault":              true,
+	"GET /vault/settings":     true,
+	"GET /notes":              true,
+	"GET /notes/read":         true,
+	"POST /notes/write":       true,
+	"POST /notes/create":      true,
+	"POST /notes/rename":      true,
+	"POST /notes/delete":      true,
+	"POST /notes/trash":       true,
+	"POST /notes/restore":     true,
+	"POST /notes/empty-trash": true,
+	"POST /notes/archive":     true,
+	"POST /notes/unarchive":   true,
+	"POST /notes/duplicate":   true,
+	"POST /notes/move":        true,
+	"GET /folders":            true,
+	"POST /folders/create":    true,
+	"POST /folders/rename":    true,
+	"POST /folders/delete":    true,
+	"GET /assets":             true,
+	"GET /assets/raw":         true,
+	"GET /assets/deleted":     true,
+	"POST /assets/upload":     true,
+	"POST /assets/rename":     true,
+	"POST /assets/move":       true,
+	"POST /assets/duplicate":  true,
+	"POST /assets/delete":     true,
+	"POST /assets/restore":    true,
+	"GET /comments/read":      true,
+	"POST /comments/write":    true,
+	"GET /search/text":        true,
+	"GET /tasks":              true,
+	"GET /tasks/for":          true,
+	"GET /templates":          true,
+	"GET /templates/read":     true,
+}
+
+func mcpRouteAllowed(method, path string) bool {
+	return mcpRoutes[method+" "+strings.TrimPrefix(path, "/api")]
 }
 
 func (t mcpTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -126,42 +139,63 @@ func (t mcpTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Body != nil {
 		defer req.Body.Close()
 	}
+	// Reached with nothing left of the call's time, there is no one to answer.
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
 	cfg := s.currentConfig()
 	path := strings.TrimPrefix(req.URL.Path, cfg.BasePath)
-	if mcpRefusedRoute(req.Method, path) {
+	if !mcpRouteAllowed(req.Method, path) {
 		return mcpResponse(req, http.StatusForbidden, "not available over MCP"), nil
 	}
-	// Checked on every call as well as before each tool, so a tool that reads and
-	// then writes cannot have the second half land in another vault.
-	if s.mcpVaultMoved() {
-		return mcpResponse(req, http.StatusConflict, mcpVaultSwitched), nil
-	}
+	limit := mcpResponseLimit(cfg)
 	// The context holds the outer request's chi route state, which would route this
 	// call straight back to /mcp, where the server's token gets a 401.
-	inner := req.Clone(context.WithValue(req.Context(), chi.RouteCtxKey, nil))
+	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, nil)
+	inner := req.Clone(context.WithValue(ctx, mcpResponseLimitKey{}, limit))
 	inner.RequestURI = req.URL.RequestURI()
 	if inner.Body == nil {
 		inner.Body = http.NoBody
 	}
 	inner.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.AuthToken))
-	recorder := &mcpRecorder{header: http.Header{}}
+	recorder := &mcpRecorder{header: http.Header{}, limit: limit}
 	s.self.ServeHTTP(recorder, inner)
 	return recorder.response(req), nil
 }
 
+// mcpResponseLimitKey marks a request as an in-process MCP call, and holds how large
+// its answer may be, for a handler that would otherwise read a whole file first.
+type mcpResponseLimitKey struct{}
+
+// tooLargeForMCP refuses a note an MCP tool could not hold in memory. A note the
+// browser app is reading is not limited.
+func tooLargeForMCP(w http.ResponseWriter, r *http.Request, size int64) bool {
+	limit, ok := r.Context().Value(mcpResponseLimitKey{}).(int64)
+	if !ok || size <= limit {
+		return false
+	}
+	http.Error(w, "too large to read over MCP", http.StatusRequestEntityTooLarge)
+	return true
+}
+
 func mcpResponse(req *http.Request, status int, text string) *http.Response {
-	recorder := &mcpRecorder{header: http.Header{}}
+	recorder := &mcpRecorder{header: http.Header{}, limit: int64(len(text))}
 	recorder.WriteHeader(status)
 	_, _ = recorder.Write([]byte(text))
 	return recorder.response(req)
 }
 
-// mcpRecorder holds one in-process response in memory.
+// mcpRecorder holds one in-process response in memory, up to a limit. Past it, the
+// answer is dropped and the call gets a 413.
 type mcpRecorder struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
+	header   http.Header
+	status   int
+	body     bytes.Buffer
+	limit    int64
+	overflow bool
 }
+
+var errMCPResponseTooLarge = errors.New("response too large for MCP")
 
 func (r *mcpRecorder) Header() http.Header { return r.header }
 
@@ -173,11 +207,21 @@ func (r *mcpRecorder) WriteHeader(status int) {
 
 func (r *mcpRecorder) Write(data []byte) (int, error) {
 	r.WriteHeader(http.StatusOK)
+	if r.overflow || int64(r.body.Len())+int64(len(data)) > r.limit {
+		r.overflow = true
+		r.body = bytes.Buffer{}
+		return 0, errMCPResponseTooLarge
+	}
 	return r.body.Write(data)
 }
 
 func (r *mcpRecorder) response(req *http.Request) *http.Response {
 	r.WriteHeader(http.StatusOK)
+	if r.overflow {
+		r.status = http.StatusRequestEntityTooLarge
+		r.header = http.Header{}
+		r.body.WriteString("too large to read over MCP")
+	}
 	return &http.Response{
 		Status:        fmt.Sprintf("%d %s", r.status, http.StatusText(r.status)),
 		StatusCode:    r.status,

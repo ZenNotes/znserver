@@ -1,8 +1,10 @@
 package httpserver
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/ZenNotes/znserver/internal/config"
 	"github.com/ZenNotes/znserver/internal/vault"
+	"github.com/go-chi/chi/v5"
 )
 
 // The full scope contract runs through /mcp from the tui repository against a built
@@ -230,37 +233,19 @@ func TestRotationRefusesAnMCPToken(t *testing.T) {
 	}
 }
 
-func TestVaultSwitchStopsMCPUntilItComesBack(t *testing.T) {
+// ZENNOTES_VAULT_PATH is required with MCP on, and it stops a switch.
+func TestPinnedVaultCannotBeSwitched(t *testing.T) {
 	second := t.TempDir()
 	server, s := newMCPServer(t, nil, mcpConfig("write"))
-	first := s.currentVault().Root()
-	url := server.URL + "/mcp"
-	if _, err := s.switchVaultRoot(second); err != nil {
-		t.Fatal(err)
-	}
-	for _, tool := range []string{"vault_info", "list_notes"} {
-		text, failed := mcpCall(t, url, tool, map[string]any{})
-		// Exactly this: stopped before the tool started, not partway through it.
-		if !failed || text != "Error: "+mcpVaultSwitched {
-			t.Errorf("%s: %v %s", tool, failed, text)
-		}
-	}
-	// A call that passed the first check and then reached the server stops there too.
-	request := httptest.NewRequest(http.MethodGet, mcpInternalBase+"/api/notes", nil)
-	response, err := mcpTransport{s}.RoundTrip(request)
-	if err != nil || response.StatusCode != http.StatusConflict {
-		t.Errorf("in-process call after the switch: %v %v", response, err)
-	}
-	if _, err := s.switchVaultRoot(first); err != nil {
-		t.Fatal(err)
-	}
-	if text, failed := mcpCall(t, url, "list_notes", map[string]any{}); failed {
-		t.Errorf("after switching back: %s", text)
+	t.Setenv("ZENNOTES_VAULT_PATH", s.currentVault().Root())
+	status, body := mcpRequest(t, server.URL+"/api/vault/select", mcpTestServerToken, fmt.Sprintf(`{"path":%q}`, second))
+	if status != http.StatusConflict {
+		t.Errorf("switch: %d %s", status, body)
 	}
 }
 
 // No tool calls these; a bug in one must still not reach them.
-func TestMCPTransportRefusesServerControls(t *testing.T) {
+func TestMCPTransportRefusesEverythingElse(t *testing.T) {
 	_, s := newMCPServer(t, nil, mcpConfig("write"))
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodPost, "/api/session/rotate-token"},
@@ -273,6 +258,12 @@ func TestMCPTransportRefusesServerControls(t *testing.T) {
 		{http.MethodGet, "/api/watch"},
 		{http.MethodPost, "/api/demo/generate"},
 		{http.MethodPost, "/api/workflows/apply"},
+		{http.MethodPost, "/api/assets/purge"},
+		{http.MethodPost, "/api/assets/empty-deleted"},
+		{http.MethodPost, "/api/templates/write"},
+		{http.MethodGet, "/api/notes/write"},
+		{http.MethodPost, "/api/notes/read"},
+		{http.MethodGet, "/api/not-a-route"},
 	} {
 		request := httptest.NewRequest(tc.method, mcpInternalBase+tc.path, strings.NewReader(`{}`))
 		response, err := mcpTransport{s}.RoundTrip(request)
@@ -290,8 +281,150 @@ func TestMCPTransportRefusesServerControls(t *testing.T) {
 	}
 }
 
+// A misspelled entry in the allow list would only show up as a tool that always fails.
+func TestEveryMCPRouteExists(t *testing.T) {
+	_, s := newMCPServer(t, nil, mcpConfig("write"))
+	exists := map[string]bool{}
+	if err := chi.Walk(s.self.(chi.Routes), func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		exists[method+" "+strings.TrimPrefix(strings.ReplaceAll(route, "/*", ""), "/api")] = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for route := range mcpRoutes {
+		if !exists[route] {
+			t.Errorf("%s is not a route", route)
+		}
+	}
+}
+
+func TestMCPTransportChecksTheContextFirst(t *testing.T) {
+	_, s := newMCPServer(t, nil, mcpConfig("write"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := httptest.NewRequest(http.MethodGet, mcpInternalBase+"/api/notes", nil).WithContext(ctx)
+	if _, err := (mcpTransport{s}).RoundTrip(request); !errors.Is(err, context.Canceled) {
+		t.Errorf("got %v", err)
+	}
+}
+
+// A note far larger than the server would accept can still be on disk. The browser app
+// reads it as before, and MCP declines before reading it into memory.
+func TestMCPDeclinesANoteTooLargeToHold(t *testing.T) {
+	server, s := newMCPServer(t, nil, mcpConfig("write"))
+	abs := filepath.Join(s.currentVault().Root(), "Big.md")
+	file, err := os.Create(abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(mcpResponseLimit(s.currentConfig()) + 1); err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+	text, failed := mcpCall(t, server.URL+"/mcp", "read_note", map[string]any{"path": "Big.md"})
+	if !failed || !strings.Contains(text, "too large") {
+		t.Errorf("read_note: %v %.200s", failed, text)
+	}
+	request, _ := http.NewRequest(http.MethodGet, server.URL+"/api/notes/read?path=Big.md", nil)
+	request.Header.Set("Authorization", "Bearer "+mcpTestServerToken)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
+	if response.StatusCode != http.StatusOK {
+		t.Errorf("REST read: %d", response.StatusCode)
+	}
+}
+
+// Before reading it, since a large note would otherwise be in memory by the time the
+// recorder's limit could refuse it. An in-process call with a tiny limit shows which one
+// answered: the recorder here has room.
+func TestReadNoteChecksTheSizeFirst(t *testing.T) {
+	_, s := newMCPServer(t, nil, mcpConfig("write"))
+	if err := os.WriteFile(filepath.Join(s.currentVault().Root(), "Note.md"), []byte(strings.Repeat("x", 100)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, mcpInternalBase+"/api/notes/read?path=Note.md", nil)
+	request = request.WithContext(context.WithValue(request.Context(), mcpResponseLimitKey{}, int64(10)))
+	request.Header.Set("Authorization", "Bearer "+mcpTestServerToken)
+	recorder := &mcpRecorder{header: http.Header{}, limit: 1 << 20}
+	s.self.ServeHTTP(recorder, request)
+	if recorder.status != http.StatusRequestEntityTooLarge || strings.Contains(recorder.body.String(), "xxx") {
+		t.Errorf("%d %q", recorder.status, recorder.body.String())
+	}
+}
+
+func TestMCPRecorderDropsAnAnswerPastItsLimit(t *testing.T) {
+	r := &mcpRecorder{header: http.Header{"X": {"y"}}, limit: 10}
+	if _, err := r.Write([]byte("0123456789")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Write([]byte("a")); !errors.Is(err, errMCPResponseTooLarge) {
+		t.Errorf("past the limit: %v", err)
+	}
+	if _, err := r.Write([]byte("a")); !errors.Is(err, errMCPResponseTooLarge) {
+		t.Errorf("after the limit: %v", err)
+	}
+	response := r.response(httptest.NewRequest(http.MethodGet, "/", nil))
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusRequestEntityTooLarge || strings.Contains(string(body), "0123") || response.Header.Get("X") != "" {
+		t.Errorf("%d %q %v", response.StatusCode, body, response.Header)
+	}
+}
+
+func TestSearchTakesALimit(t *testing.T) {
+	server, s := newMCPServer(t, nil, mcpConfig("write"))
+	var body strings.Builder
+	for i := range 250 {
+		fmt.Fprintf(&body, "needle %d\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(s.currentVault().Root(), "Many.md"), []byte(body.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	search := func(query string) (int, int) {
+		request, _ := http.NewRequest(http.MethodGet, server.URL+"/api/search/text?q=needle"+query, nil)
+		request.Header.Set("Authorization", "Bearer "+mcpTestServerToken)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var matches []any
+		_ = json.NewDecoder(response.Body).Decode(&matches)
+		return response.StatusCode, len(matches)
+	}
+	if status, n := search(""); status != http.StatusOK || n != vault.DefaultTextSearchLimit {
+		t.Errorf("no limit: %d, %d matches", status, n)
+	}
+	if status, n := search("&limit=240"); status != http.StatusOK || n != 240 {
+		t.Errorf("limit 240: %d, %d matches", status, n)
+	}
+	for _, bad := range []string{"0", "-1", "x", fmt.Sprint(vault.MaxTextSearchLimit + 1)} {
+		if status, _ := search("&limit=" + bad); status != http.StatusBadRequest {
+			t.Errorf("limit %s: %d", bad, status)
+		}
+	}
+}
+
+func TestCommentsAreSignedByTheCredential(t *testing.T) {
+	server, s := newMCPServer(t, nil, mcpConfig("write"))
+	if err := os.WriteFile(filepath.Join(s.currentVault().Root(), "Note.md"), []byte("# Note\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	url := server.URL + "/mcp"
+	if text, failed := mcpCall(t, url, "add_comment", map[string]any{"path": "Note.md", "body": "hi", "author": "The Owner"}); failed {
+		t.Fatalf("add_comment: %s", text)
+	}
+	text, failed := mcpCall(t, url, "list_comments", map[string]any{"path": "Note.md"})
+	if failed || !strings.Contains(text, `"author": "test"`) || strings.Contains(text, "The Owner") {
+		t.Errorf("list_comments: %s", text)
+	}
+}
+
 func TestMCPRecorderKeepsTheFirstStatus(t *testing.T) {
-	r := &mcpRecorder{header: http.Header{}}
+	r := &mcpRecorder{header: http.Header{}, limit: 10}
 	r.WriteHeader(http.StatusTeapot)
 	r.WriteHeader(http.StatusOK)
 	_, _ = r.Write([]byte("hi"))

@@ -18,7 +18,9 @@ func clearMCPEnv(t *testing.T) {
 		"ZENNOTES_MCP_ALLOW_PATHS", "ZENNOTES_MCP_DENY_PATHS", "ZENNOTES_MCP_CREDENTIALS_FILE", "ZENNOTES_MCP_ALLOWED_ORIGINS",
 	} {
 		t.Setenv(name, "")
+		os.Unsetenv(name)
 	}
+	t.Setenv("ZENNOTES_VAULT_PATH", "/vault")
 }
 
 func writeTemp(t *testing.T, body string) string {
@@ -112,6 +114,13 @@ func TestMCPRefusals(t *testing.T) {
 		want string
 	}{
 		{name: "nothing", want: "no token"},
+		{name: "no vault path", env: map[string]string{"ZENNOTES_MCP_TOKEN": testMCPToken, "ZENNOTES_VAULT_PATH": ""}, want: "ZENNOTES_VAULT_PATH"},
+		{name: "a blank vault path", env: map[string]string{"ZENNOTES_MCP_TOKEN": testMCPToken, "ZENNOTES_VAULT_PATH": "  "}, want: "ZENNOTES_VAULT_PATH"},
+		{name: "allow blank", env: map[string]string{"ZENNOTES_MCP_TOKEN": testMCPToken, "ZENNOTES_MCP_ALLOW_PATHS": ""}, want: "JSON array"},
+		{name: "allow empty", env: map[string]string{"ZENNOTES_MCP_TOKEN": testMCPToken, "ZENNOTES_MCP_ALLOW_PATHS": "[]"}, want: "is empty"},
+		{name: "allow null", env: map[string]string{"ZENNOTES_MCP_TOKEN": testMCPToken, "ZENNOTES_MCP_ALLOW_PATHS": "null"}, want: "is empty"},
+		{name: "file allow empty", file: `{"version":1,"credentials":[` + entry(`,"allow":[]`) + `]}`, want: "is empty"},
+		{name: "file allow null", file: `{"version":1,"credentials":[` + entry(`,"allow":null`) + `]}`, want: "is empty"},
 		{name: "short", env: map[string]string{"ZENNOTES_MCP_TOKEN": "short"}, want: "fewer than 32"},
 		{name: "missing token file", env: map[string]string{"ZENNOTES_MCP_TOKEN_FILE": "/does/not/exist"}, want: "could not be read"},
 		{name: "empty token file", env: map[string]string{"ZENNOTES_MCP_TOKEN_FILE": writeTemp(t, " \n")}, want: "no token"},
