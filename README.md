@@ -551,8 +551,8 @@ how much of the vault can make that trip.
   would be killed. Set `GOMEMLIMIT` yourself and yours is used.
 - **Read-only containers.** With `read_only: true`, give `/tmp` a tmpfs, because an upload over
   8 MiB spills to a temp file there.
-- **Concurrent edits.** Assistants editing or moving one note take turns. Someone editing it elsewhere
-  at that moment, in the browser or with `zn`, can still be overwritten.
+- **Concurrent edits.** Assistants' changes take turns, one at a time. Someone editing a note
+  elsewhere at that moment, in the browser or with `zn`, can still be overwritten.
 - **Logs.** A tool call's line holds the credential's name, the tool, the outcome and the
   duration, never tokens, arguments or results. Requests with no valid token are counted, at
   most once a minute. Other log lines can name a path, such as a failed operation or a deny
