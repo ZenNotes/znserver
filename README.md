@@ -400,7 +400,7 @@ Off unless `ZENNOTES_MCP_ENABLED` is on. See [MCP for AI assistants](#mcp-for-ai
 | `ZENNOTES_MCP_TOKEN_FILE` | none | Read that token from a file instead. Contents are trimmed. |
 | `ZENNOTES_MCP_ACCESS` | none, required | `read`, `comment` or `write`. |
 | `ZENNOTES_MCP_ALLOW_PATHS` | whole vault | JSON array of folders and notes to share, such as `["Projects","Areas/Health"]`. Everything else does not exist for the assistant. Blank, `[]` and `null` are refused: leave it out to share the whole vault. |
-| `ZENNOTES_MCP_DENY_PATHS` | none | JSON array of folders and notes to hide, even inside an allowed one. A note stays hidden when it is archived or trashed. Blank, `[]` and `null` are refused: leave it out to hide nothing. |
+| `ZENNOTES_MCP_DENY_PATHS` | none | JSON array of folders and notes to hide, even inside an allowed one. A note stays hidden when it is archived or trashed. An entry naming a single note shuts this credential out of everything once that note is archived, moved or renamed, until the entry is fixed, so prefer folders. Blank, `[]` and `null` are refused: leave it out to hide nothing. |
 | `ZENNOTES_MCP_CREDENTIALS_FILE` | none | Several assistants, each with its own token and scope. Cannot be combined with the token, access and path variables. |
 | `ZENNOTES_MCP_ALLOWED_ORIGINS` | none | Comma-separated `Origin` values to accept. Any other `Origin` gets a 403. MCP clients outside a browser send none, so you rarely need this. For a web page to call `/mcp`, its origin must also be in `ZENNOTES_ALLOWED_ORIGINS`, which sends the CORS headers. |
 
@@ -543,9 +543,10 @@ how much of the vault can make that trip.
   has its share of 64 MiB of request bodies. A credential that can write can send a note up to
   `ZENNOTES_MAX_NOTE_BYTES` or a 16 MiB attachment. Others can send 1 MiB. The note limit applies
   after JSON encoding, so a note full of quotes or line breaks reaches it at about half the size.
-  JSON nested more than 64 levels deep and JSON-RPC batches are refused. A tool cannot read a note
-  larger than the larger of 64 MiB and twice `ZENNOTES_MAX_NOTE_BYTES`, or less in a small container,
-  down to 16 MiB.
+  JSON nested more than 64 levels deep and JSON-RPC batches are refused. An answer can be up to
+  the larger of 64 MiB and twice `ZENNOTES_MAX_NOTE_BYTES`, or less in a small container, down to
+  16 MiB, and a tool told it is too large says so. It is measured after JSON encoding, twice over,
+  so a note made almost entirely of quotes reaches it at about a quarter of the size.
 - **Memory.** In a container with a memory limit, the server sets a soft limit of 70% of it at
   startup, and says so in the log, so that it collects garbage harder before the container
   would be killed. Set `GOMEMLIMIT` yourself and yours is used.

@@ -70,15 +70,16 @@ func (s *Server) EnableMCP(m config.MCPConfig) error {
 	memoryLimit := debug.SetMemoryLimit(-1)
 	s.mcpResponseBytes = mcpResponseLimit(cfg, memoryLimit)
 	handler, err := mcpserver.NewHandler(mcpserver.Options{
-		Transport:      mcpTransport{s},
-		BaseURL:        mcpInternalBase + cfg.BasePath,
-		Credentials:    credentials,
-		AllowedOrigins: m.AllowedOrigins,
-		MaxNoteBytes:   cfg.MaxNoteBytes,
-		MaxToolCalls:   mcpToolCalls(memoryLimit),
-		MaxInFlight:    mcpInFlight(memoryLimit),
-		Version:        znserver.Version(),
-		Logf:           log.Printf,
+		Transport:        mcpTransport{s},
+		BaseURL:          mcpInternalBase + cfg.BasePath,
+		Credentials:      credentials,
+		AllowedOrigins:   m.AllowedOrigins,
+		MaxNoteBytes:     cfg.MaxNoteBytes,
+		MaxToolCalls:     mcpToolCalls(memoryLimit),
+		MaxInFlight:      mcpInFlight(memoryLimit),
+		MaxResponseBytes: s.mcpResponseBytes,
+		Version:          znserver.Version(),
+		Logf:             log.Printf,
 	})
 	if err != nil {
 		return err
