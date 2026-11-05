@@ -1134,7 +1134,7 @@ func (s *Server) rawAsset(w http.ResponseWriter, r *http.Request) {
 	// script and gets no access to this origin. An image still draws, SVG included, and
 	// PDFs are exempt because the browser's viewer does not work in a sandbox (#121).
 	if ext != ".pdf" {
-		w.Header().Set("Content-Security-Policy", contentSecurityPolicy()+"; sandbox")
+		w.Header().Set("Content-Security-Policy", s.contentSecurityPolicyFor(r)+"; sandbox")
 	}
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	http.ServeFile(w, r, abs)

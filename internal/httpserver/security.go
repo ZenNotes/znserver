@@ -546,7 +546,58 @@ func (s *Server) logCORSRejection(origin string) {
 	)
 }
 
-func contentSecurityPolicy() string {
+// unsplashAPIOrigin is the one other host the web client's own script talks to:
+// the cover picker searches Unsplash from the browser with the person's own
+// key, and pings a photo's download endpoint there when it becomes a cover.
+// The photos themselves load as images, under img-src.
+const unsplashAPIOrigin = "https://api.unsplash.com"
+
+// connectSources lists where the page's script may send anything: its own
+// origin, the watch socket on its own host, and Unsplash's API. 'self' covers
+// ws: and wss: on the same host in current browsers but not in every engine the
+// web client runs in, so the socket's host is named outright. A Host header that
+// is not a plain host[:port] names no socket and leaves 'self' alone.
+func connectSources(host string) string {
+	sources := []string{"'self'"}
+	if validCSPHost(host) {
+		sources = append(sources, "ws://"+host, "wss://"+host)
+	}
+	sources = append(sources, unsplashAPIOrigin)
+	return strings.Join(sources, " ")
+}
+
+// validCSPHost accepts what a browser puts in Host: a name or address and an
+// optional port. Anything else could end the directive early.
+func validCSPHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	for _, c := range host {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.', c == '-', c == ':', c == '[', c == ']':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// cspHost is the host the browser reached this server at, as requestOrigin
+// works it out (through a trusted proxy's X-Forwarded-Host when there is one).
+func (s *Server) cspHost(r *http.Request) string {
+	origin := s.requestOrigin(r)
+	if i := strings.Index(origin, "://"); i >= 0 {
+		return origin[i+3:]
+	}
+	return ""
+}
+
+func (s *Server) contentSecurityPolicyFor(r *http.Request) string {
+	return contentSecurityPolicy(s.cspHost(r))
+}
+
+func contentSecurityPolicy(host string) string {
 	return strings.Join([]string{
 		"default-src 'self'",
 		"script-src 'self' 'unsafe-eval'",
@@ -555,7 +606,7 @@ func contentSecurityPolicy() string {
 		"media-src 'self' data: blob:",
 		"font-src 'self' data:",
 		"worker-src 'self' blob:",
-		"connect-src 'self' ws: wss: https:",
+		"connect-src " + connectSources(host),
 		"frame-src 'self' data: blob: https://www.youtube-nocookie.com https://player.vimeo.com",
 		"object-src 'none'",
 		"base-uri 'none'",
@@ -571,7 +622,7 @@ func contentSecurityPolicy() string {
 
 func (s *Server) securityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", contentSecurityPolicy())
+		w.Header().Set("Content-Security-Policy", s.contentSecurityPolicyFor(r))
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
