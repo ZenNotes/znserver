@@ -1,7 +1,7 @@
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
-github.com/ZenNotes/tui v0.17.0 h1:iSbYyBKOCn8skAP295QEej/6+7Oo9GY8IYhKyX6zpXo=
-github.com/ZenNotes/tui v0.17.0/go.mod h1:UDqaljDU+K/Ie245Xnvlo972T18D/pe4fZHomsn7bV8=
+github.com/ZenNotes/tui v0.17.1 h1:Jil20exP3eGjkCj7GkgNIQadOa0UH2ymDEwfB1IW34I=
+github.com/ZenNotes/tui v0.17.1/go.mod h1:UDqaljDU+K/Ie245Xnvlo972T18D/pe4fZHomsn7bV8=
 github.com/coder/websocket v1.8.12 h1:5bUXkEPPIbewrnkU8LTCLVaxi4N4J8ahufH2vlo4NAo=
 github.com/coder/websocket v1.8.12/go.mod h1:LNVeNrXQZfe5qhS9ALED3uA+l5pPqvwXg3CKoDBB2gs=
 github.com/fsnotify/fsnotify v1.8.0 h1:dAwr6QBTBZIkG8roQaJjGof0pp0EeF+tNV7YBP3F/8M=

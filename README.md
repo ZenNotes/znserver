@@ -564,6 +564,9 @@ how much of the vault can make that trip.
 - An assistant restricted to certain paths is not offered note renames, or attachment reads,
   renames, moves or copies. Renames are out because the server rewrites links in every note,
   including ones the assistant cannot see. This is the same as `zn mcp` against a server.
+- Such an assistant can read and edit a database's record pages, but cannot rename, move, copy,
+  archive, trash or delete them, and it cannot list, rename or delete the database as a folder.
+  The database's schema names its pages, and the assistant may not see all that uses them.
 - Edits made over MCP do not appear in agent edit review.
 - OAuth. ChatGPT's and Claude's ordinary connectors need it and a public URL, so they
   cannot use a static token. Use the tunnel, or a client that can send a header.
