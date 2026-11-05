@@ -141,6 +141,9 @@ func logStartupBanner(cfg config.Config) {
 	}
 	log.Printf("tls:          %s", tlsMode)
 	log.Printf("cors:         %s", corsMode(cfg))
+	if mode := hostsMode(cfg); mode != "" {
+		log.Printf("hosts:        %s", mode)
+	}
 	if !bindIsLoopback(cfg.Bind) && !cfg.BehindTLS {
 		log.Printf("WARNING: bound to a non-loopback address without ZENNOTES_BEHIND_TLS=1.")
 		log.Printf("WARNING: put a TLS-terminating reverse proxy in front before exposing publicly.")
@@ -184,6 +187,19 @@ func corsMode(cfg config.Config) string {
 		return "same-origin only (set ZENNOTES_ALLOWED_ORIGINS for browser or WebView clients)"
 	}
 	return fmt.Sprintf("same-origin plus %s", strings.Join(cfg.AllowedOrigins, ", ")) + dev
+}
+
+// hostsMode names the Host names the server answers to, when it limits them:
+// only on a loopback bind with no auth token (see hostGuardActive).
+func hostsMode(cfg config.Config) string {
+	if strings.TrimSpace(cfg.AuthToken) != "" || !bindIsLoopback(cfg.Bind) {
+		return ""
+	}
+	mode := "localhost and IP addresses"
+	if len(cfg.AllowedHosts) > 0 {
+		return mode + " plus " + strings.Join(cfg.AllowedHosts, ", ")
+	}
+	return mode + " only (no auth token; set ZENNOTES_ALLOWED_HOSTS to add a name)"
 }
 
 func warnInsecureExposureLoop(ctx context.Context) {

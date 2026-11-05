@@ -52,6 +52,11 @@ type Config struct {
 	TrustedProxies  []net.IPNet `json:"-"`
 	VaultFileMode   fs.FileMode `json:"-"`
 	VaultDirMode    fs.FileMode `json:"-"`
+
+	// AllowedHosts are Host names a loopback bind with no auth token answers to
+	// besides localhost and IP addresses (ZENNOTES_ALLOWED_HOSTS), such as the
+	// public name a proxy on the same machine forwards.
+	AllowedHosts []string `json:"-"`
 }
 
 func configFilePath() string {
@@ -104,6 +109,7 @@ func Load() Config {
 	}
 	cfg.BrowseRoots = parseListEnv("ZENNOTES_BROWSE_ROOTS")
 	cfg.AllowedOrigins = parseListEnv("ZENNOTES_ALLOWED_ORIGINS")
+	cfg.AllowedHosts = parseListEnv("ZENNOTES_ALLOWED_HOSTS")
 	if v := os.Getenv("ZENNOTES_BIND"); v != "" {
 		cfg.Bind = v
 	}

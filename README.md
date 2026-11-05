@@ -225,7 +225,8 @@ ZENNOTES_VAULT_PATH="$HOME/Notes" zennotes-server
 By default the server binds to `127.0.0.1:7878`, serves `~/ZenNotesVault` if no
 vault path is given, and stores its config in `~/.zennotes/server.json`. On a
 loopback bind no token is required, and anything on the machine can read and
-write the vault. Set a token anyway if other users share the host:
+write the vault. It then answers only to `localhost` and IP addresses (see
+`ZENNOTES_ALLOWED_HOSTS`). Set a token anyway if other users share the host:
 
 ```sh
 export ZENNOTES_AUTH_TOKEN="$(openssl rand -hex 32)"
@@ -370,10 +371,11 @@ the token from the UI. Environment variables win over the file.
 | `ZENNOTES_BEHIND_TLS` | off | Declare that a TLS-terminating proxy is in front. Marks cookies `Secure` and sends HSTS. |
 | `ZENNOTES_TRUSTED_PROXIES` | none | Comma-separated IPs or CIDRs whose `X-Forwarded-*` headers are honoured. Set this when the proxy is not on loopback. |
 | `ZENNOTES_ALLOWED_ORIGINS` | none | Comma-separated browser origins allowed to call the API cross-origin. Any other origin, including another port on the same machine, may not read answers, change the vault or open the watch socket. `*` allows all but withholds the session cookie. The desktop app, `zn` and the phone apps do not need this. |
+| `ZENNOTES_ALLOWED_HOSTS` | none | Comma-separated host names a loopback bind with no token answers to, besides `localhost` and IP addresses. Any other name gets a 403. Set it when a proxy on the same machine forwards a public name and no token is set. A token makes this unnecessary. |
 | `ZENNOTES_BROWSE_ROOTS` | the vault path | Directories the vault picker may offer. Anything outside is rejected. |
 | `ZENNOTES_ALLOW_UNSCOPED_BROWSE` | off | Let the vault picker browse the whole filesystem. |
 | `ZENNOTES_PERSIST_SESSIONS` | off | Save browser sessions to `sessions.json` (mode `0600`) so logins survive restarts. |
-| `ZENNOTES_ALLOW_INSECURE_NOAUTH` | off | Start on a non-loopback bind with no token. Anyone who can reach the port can read and write the vault. |
+| `ZENNOTES_ALLOW_INSECURE_NOAUTH` | off | Start on a non-loopback bind with no token. Anyone who can reach the port can read and write the vault. Any website you visit can reach it too, through DNS rebinding, so set a token or keep the server on a loopback bind, where it answers only to local host names. |
 
 ### Limits and file modes
 

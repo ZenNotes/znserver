@@ -184,6 +184,7 @@ func (s *Server) Router() http.Handler {
 	// let any client spoof the rate-limit and audit identity.
 	// clientAddressKey() does trust-aware extraction instead.
 	outer.Use(s.securityHeadersMiddleware)
+	outer.Use(s.hostGuard)
 	outer.Use(s.corsMiddleware)
 	outer.Use(s.crossSiteGuard)
 	outer.Use(middleware.Recoverer)

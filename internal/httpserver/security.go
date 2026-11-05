@@ -321,6 +321,64 @@ func isLoopbackBind(bind string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// hostName is the name part of a Host header or a configured host, lowercased,
+// without a port, brackets or a trailing dot.
+func hostName(raw string) string {
+	host := strings.TrimSpace(raw)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	return strings.TrimSuffix(strings.ToLower(host), ".")
+}
+
+// hostAnswered reports whether a loopback server with no auth token answers a
+// request addressed to this Host. Such a server trusts anything that reaches
+// it, and only some names are sure to reach it from this machine alone: an IP
+// address, localhost and its subdomains, which browsers resolve themselves.
+// Any other name is whatever DNS says it is at the moment, so a page on that
+// name can point it at 127.0.0.1 and be same-origin with the server. Those
+// names need the operator's word, in ZENNOTES_ALLOWED_HOSTS.
+func hostAnswered(cfg config.Config, rawHost string) bool {
+	host := hostName(rawHost)
+	if host == "" || net.ParseIP(host) != nil {
+		return true
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	for _, allowed := range cfg.AllowedHosts {
+		if hostName(allowed) == host {
+			return true
+		}
+	}
+	return false
+}
+
+// hostGuardActive says whether hostGuard checks Host at all. With an auth token
+// a request from an unknown name holds neither the token nor a cookie, which
+// browsers keep per host, so the token is the check. Off loopback the server
+// refuses to start without a token unless the operator opts out, and has no
+// fixed set of names to expect.
+func hostGuardActive(cfg config.Config) bool {
+	return strings.TrimSpace(cfg.AuthToken) == "" && isLoopbackBind(cfg.Bind)
+}
+
+// hostGuard refuses a request whose Host the server does not answer to.
+func (s *Server) hostGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.currentConfig()
+		// An in-process MCP call addresses an internal name, and MCP needs a token.
+		_, inProcess := r.Context().Value(mcpResponseLimitKey{}).(int64)
+		if !inProcess && hostGuardActive(cfg) && !hostAnswered(cfg, r.Host) {
+			s.logHostRejection(hostName(r.Host))
+			http.Error(w, "this server does not answer to that host name; add it to ZENNOTES_ALLOWED_HOSTS", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func isLoopbackOrigin(origin string) bool {
 	parsed, err := url.Parse(origin)
 	if err != nil {
@@ -524,6 +582,19 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 }
 
 const maxLoggedOrigins = 256
+
+// logHostRejection logs each refused host name once, sharing the origin log's
+// bound.
+func (s *Server) logHostRejection(host string) {
+	if s.loggedOriginCount.Load() >= maxLoggedOrigins {
+		return
+	}
+	if _, loaded := s.loggedOrigins.LoadOrStore("host "+host, struct{}{}); loaded {
+		return
+	}
+	s.loggedOriginCount.Add(1)
+	log.Printf("refused a request for host %q: with no auth token on a loopback bind the server answers to localhost and IP addresses only; add the name to ZENNOTES_ALLOWED_HOSTS to allow it", host)
+}
 
 // logCORSRejection emits one log line per unique origin so a
 // misconfigured ZENNOTES_ALLOWED_ORIGINS surfaces in operator logs

@@ -46,3 +46,20 @@ func TestCorsModeTellsTheTruth(t *testing.T) {
 		}
 	}
 }
+
+func TestHostsModeNamesTheHostCheck(t *testing.T) {
+	cases := []struct {
+		cfg  config.Config
+		want string
+	}{
+		{config.Config{Bind: "127.0.0.1:7878"}, "localhost and IP addresses only (no auth token; set ZENNOTES_ALLOWED_HOSTS to add a name)"},
+		{config.Config{Bind: "127.0.0.1:7878", AllowedHosts: []string{"notes.example.com"}}, "localhost and IP addresses plus notes.example.com"},
+		{config.Config{Bind: "127.0.0.1:7878", AuthToken: "t"}, ""},
+		{config.Config{Bind: "0.0.0.0:7878"}, ""},
+	}
+	for _, tc := range cases {
+		if got := hostsMode(tc.cfg); got != tc.want {
+			t.Errorf("hostsMode(%+v) = %q, want %q", tc.cfg, got, tc.want)
+		}
+	}
+}
