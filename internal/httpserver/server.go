@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -11,8 +12,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -45,6 +48,17 @@ type Server struct {
 	loginLimiter    *attemptLimiter
 	wsRejectLimiter *attemptLimiter
 	loggedOrigins   sync.Map // origin -> struct{}; dedupes CORS-rejection logs
+	// loggedOriginCount is how many are in loggedOrigins.
+	loggedOriginCount atomic.Int64
+
+	// Set once by EnableMCP before Router runs, and read-only after. mcp stays nil
+	// unless MCP is on, in which case /mcp is not routed at all.
+	mcp       http.Handler
+	mcpTokens map[[sha256.Size]byte]bool
+	// mcpResponseBytes is mcpResponseLimit, worked out once.
+	mcpResponseBytes int64
+	// self is the finished router, which the MCP tools call in-process.
+	self http.Handler
 }
 
 func init() {
@@ -153,6 +167,11 @@ func (s *Server) Router() http.Handler {
 		s.registerProtectedRoutes(r)
 	})
 
+	// Outside requireAuth, which takes the server's token: /mcp has its own.
+	if s.mcp != nil {
+		inner.Handle("/mcp", s.mcp)
+	}
+
 	// Static / PWA fallback.
 	if s.Static != nil {
 		inner.Get("/*", s.serveStatic)
@@ -168,6 +187,7 @@ func (s *Server) Router() http.Handler {
 	outer.Use(s.corsMiddleware)
 	outer.Use(middleware.Recoverer)
 
+	s.self = outer
 	basePath := s.currentConfig().BasePath
 	if basePath != "" {
 		outer.Mount(basePath, inner)
@@ -676,6 +696,16 @@ func (s *Server) assetsExists(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) readNote(w http.ResponseWriter, r *http.Request) {
 	rel := r.URL.Query().Get("path")
+	if _, isMCP := r.Context().Value(mcpResponseLimitKey{}).(int64); isMCP {
+		size, err := s.currentVault().NoteSize(rel)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if tooLargeForMCP(w, r, size) {
+			return
+		}
+	}
 	note, err := s.currentVault().ReadNote(rel)
 	if err != nil {
 		writeError(w, err)
@@ -1015,7 +1045,18 @@ func (s *Server) searchCapabilities(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) searchText(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
-	matches, err := s.currentVault().SearchText(q)
+	// A scoped MCP client filters what it gets, so it must see past the usual cap for a
+	// visible match not to be crowded out by hidden ones.
+	limit := vault.DefaultTextSearchLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 || parsed > vault.MaxTextSearchLimit {
+			http.Error(w, "limit must be between 1 and "+strconv.Itoa(vault.MaxTextSearchLimit), http.StatusBadRequest)
+			return
+		}
+		limit = parsed
+	}
+	matches, err := s.currentVault().SearchTextUpTo(q, limit)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1053,12 +1094,28 @@ func (s *Server) rawAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ext := strings.ToLower(filepath.Ext(abs))
-	if t := mime.TypeByExtension(ext); t != "" {
-		w.Header().Set("Content-Type", t)
+	contentType := mime.TypeByExtension(ext)
+	if inertAssetExt[ext] {
+		contentType = "text/plain; charset=utf-8"
+	}
+	if contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	// A vault's files are not this site's code, and whoever wrote one may have had less
+	// access than the person now viewing it. As a page or a document, a file runs no
+	// script and gets no access to this origin. An image still draws, SVG included, and
+	// PDFs are exempt because the browser's viewer does not work in a sandbox (#121).
+	if ext != ".pdf" {
+		w.Header().Set("Content-Security-Policy", contentSecurityPolicy()+"; sandbox")
 	}
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	http.ServeFile(w, r, abs)
 }
+
+// inertAssetExt are files a page could load as code with a `<script>` tag or the like,
+// where a sandbox on the file itself does nothing. With nosniff, a browser will not run
+// them as plain text.
+var inertAssetExt = map[string]bool{".js": true, ".mjs": true, ".cjs": true, ".wasm": true}
 
 func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 	cfg := s.currentConfig()
@@ -1067,6 +1124,9 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// net/http cleans up only the form on the request it started with, and the router
+	// hands this handler a copy.
+	defer func() { _ = r.MultipartForm.RemoveAll() }()
 	notePath := r.FormValue("notePath")
 	file, header, err := r.FormFile("file")
 	if err != nil {

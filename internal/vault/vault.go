@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -1625,6 +1627,21 @@ func (v *Vault) readMetaWithPreambleFolder(
 	return meta, nil
 }
 
+// NoteSize is how large a note is on disk, without reading it.
+func (v *Vault) NoteSize(rel string) (int64, error) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	abs, err := SafeJoin(v.root, rel)
+	if err != nil {
+		return 0, err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
 func (v *Vault) ReadNote(rel string) (NoteContent, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -1963,7 +1980,10 @@ func (v *Vault) CreateNote(folder NoteFolder, title, subpath string) (NoteMeta, 
 	if err := os.MkdirAll(dir, v.dirMode); err != nil {
 		return NoteMeta{}, err
 	}
-	abs := uniquePath(dir, title, ".md")
+	abs, err := uniquePath(dir, title, ".md")
+	if err != nil {
+		return NoteMeta{}, err
+	}
 	// Seed the same `# Title` body the desktop app writes (main vault.ts and
 	// the MCP vault-ops both do), from the FINAL on-disk stem so a deduped
 	// "Title 2" heads itself correctly. A remote vault otherwise creates
@@ -2003,7 +2023,10 @@ func (v *Vault) CreateExcalidraw(folder NoteFolder, title, subpath string) (Note
 	if err := os.MkdirAll(dir, v.dirMode); err != nil {
 		return NoteMeta{}, err
 	}
-	abs := uniquePath(dir, title, excalidrawExt)
+	abs, err := uniquePath(dir, title, excalidrawExt)
+	if err != nil {
+		return NoteMeta{}, err
+	}
 	if err := writeNewFile(abs, []byte(emptyExcalidrawJSON), v.fileMode); err != nil {
 		return NoteMeta{}, err
 	}
@@ -2050,7 +2073,9 @@ func (v *Vault) renameNoteFile(rel, nextTitle string) (NoteMeta, error) {
 	}
 	if target, statErr := os.Stat(desired); statErr == nil {
 		if !os.SameFile(source, target) {
-			newAbs = uniquePath(dir, nextTitle, noteExt(abs))
+			if newAbs, err = uniquePath(dir, nextTitle, noteExt(abs)); err != nil {
+				return NoteMeta{}, err
+			}
 		}
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return NoteMeta{}, statErr
@@ -2208,7 +2233,10 @@ func (v *Vault) moveBetweenFolders(rel string, target NoteFolder) (NoteMeta, err
 	if err := os.MkdirAll(destDir, v.dirMode); err != nil {
 		return NoteMeta{}, err
 	}
-	newAbs := uniquePath(destDir, title, noteExt(abs))
+	newAbs, err := uniquePath(destDir, title, noteExt(abs))
+	if err != nil {
+		return NoteMeta{}, err
+	}
 	nextRel, err := filepath.Rel(v.root, newAbs)
 	if err != nil {
 		return NoteMeta{}, err
@@ -2275,7 +2303,10 @@ func (v *Vault) DuplicateNote(rel string) (NoteMeta, error) {
 	}
 	folder, _ := v.folderOf(abs)
 	title := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs)) + " copy"
-	newAbs := uniquePath(filepath.Dir(abs), sanitizeFileStem(title), noteExt(abs))
+	newAbs, err := uniquePath(filepath.Dir(abs), sanitizeFileStem(title), noteExt(abs))
+	if err != nil {
+		return NoteMeta{}, err
+	}
 	if err := copyFile(abs, newAbs, v.fileMode); err != nil {
 		return NoteMeta{}, err
 	}
@@ -2315,7 +2346,10 @@ func (v *Vault) MoveNote(rel string, target NoteFolder, targetSubpath string) (N
 		return NoteMeta{}, err
 	}
 	title := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
-	newAbs := uniquePath(destDir, title, noteExt(abs))
+	newAbs, err := uniquePath(destDir, title, noteExt(abs))
+	if err != nil {
+		return NoteMeta{}, err
+	}
 	nextRel, err := filepath.Rel(v.root, newAbs)
 	if err != nil {
 		return NoteMeta{}, err
@@ -2533,7 +2567,10 @@ func (v *Vault) DuplicateFolder(folder NoteFolder, subpath string) (string, erro
 	}
 	parent := filepath.Dir(src)
 	baseName := filepath.Base(src) + " copy"
-	dst := uniqueDir(parent, baseName)
+	dst, err := uniqueDir(parent, baseName)
+	if err != nil {
+		return "", err
+	}
 	if err := copyDir(src, dst, v.fileMode, v.dirMode); err != nil {
 		return "", err
 	}
@@ -2836,7 +2873,19 @@ func (v *Vault) textSearchCandidatesLocked() ([]textSearchCandidate, error) {
 	return candidates, nil
 }
 
+// DefaultTextSearchLimit is how many matches a search returns unless told otherwise,
+// and MaxTextSearchLimit the most it may be told.
+const (
+	DefaultTextSearchLimit = 200
+	MaxTextSearchLimit     = 50000
+)
+
 func (v *Vault) SearchText(query string) ([]TextSearchMatch, error) {
+	return v.SearchTextUpTo(query, DefaultTextSearchLimit)
+}
+
+// SearchTextUpTo is SearchText returning at most limit matches.
+func (v *Vault) SearchTextUpTo(query string, limit int) ([]TextSearchMatch, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	query = strings.TrimSpace(query)
@@ -2866,7 +2915,7 @@ func (v *Vault) SearchText(query string) ([]TextSearchMatch, error) {
 			continue
 		}
 		out = append(out, candidate.match)
-		if len(out) >= 200 {
+		if len(out) >= limit {
 			break
 		}
 	}
@@ -2903,7 +2952,10 @@ func (v *Vault) ImportAsset(notePath, filename string, body io.Reader) (Imported
 	}
 	ext := filepath.Ext(safeName)
 	stem := strings.TrimSuffix(safeName, ext)
-	abs := uniquePath(assetsAbs, stem, ext)
+	abs, err := uniquePath(assetsAbs, stem, ext)
+	if err != nil {
+		return ImportedAsset{}, err
+	}
 	f, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_EXCL, v.fileMode)
 	if err != nil {
 		return ImportedAsset{}, err
@@ -3058,7 +3110,10 @@ func (v *Vault) moveAssetFile(rel, targetDir string) (AssetMeta, string, error) 
 	name := filepath.Base(srcAbs)
 	ext := filepath.Ext(name)
 	stem := strings.TrimSuffix(name, ext)
-	destAbs := uniquePath(destDir, stem, ext)
+	destAbs, err := uniquePath(destDir, stem, ext)
+	if err != nil {
+		return AssetMeta{}, "", err
+	}
 	if err := os.Rename(srcAbs, destAbs); err != nil {
 		return AssetMeta{}, "", err
 	}
@@ -3165,12 +3220,34 @@ func makeAssetMarkdown(vaultRelPath, kind, name string) string {
 
 var forbiddenFilenameChars = []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|"}
 
+// maxFileStemBytes keeps a name inside the 255 bytes most filesystems allow, with
+// room for a copy number and an extension.
+const maxFileStemBytes = 200
+
+// capFileStem shortens a name to maxFileStemBytes without splitting a character.
+func capFileStem(stem string) string {
+	if len(stem) <= maxFileStemBytes {
+		return stem
+	}
+	cut := maxFileStemBytes
+	for cut > 0 && !utf8.RuneStart(stem[cut]) {
+		cut--
+	}
+	return strings.TrimSpace(stem[:cut])
+}
+
 func sanitizeFileStem(title string) string {
 	t := title
 	for _, c := range forbiddenFilenameChars {
 		t = strings.ReplaceAll(t, c, "")
 	}
-	t = strings.TrimSpace(t)
+	t = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, t)
+	t = capFileStem(strings.TrimSpace(t))
 	if t == "" {
 		t = defaultTitle()
 	}
@@ -3180,7 +3257,7 @@ func sanitizeFileStem(title string) string {
 func sanitizeFileName(name string) string {
 	leaf := filepath.Base(name)
 	safe := strings.Map(func(r rune) rune {
-		if r < 0x20 || strings.ContainsRune("\\/:%*?\"<>|[]#^", r) {
+		if unicode.IsControl(r) || strings.ContainsRune("\\/:%*?\"<>|[]#^", r) {
 			return '-'
 		}
 		return r
@@ -3189,6 +3266,13 @@ func sanitizeFileName(name string) string {
 	if safe == "." || safe == ".." {
 		return ""
 	}
+	if len(safe) > maxFileStemBytes {
+		ext := filepath.Ext(safe)
+		if len(ext) > 32 {
+			ext = ""
+		}
+		safe = capFileStem(strings.TrimSuffix(safe, ext)) + ext
+	}
 	return safe
 }
 
@@ -3196,20 +3280,25 @@ func defaultTitle() string {
 	return "Untitled-" + time.Now().Format("2006-01-02-150405")
 }
 
+// maxUniqueAttempts bounds the search for a free name, which runs under the vault's
+// lock.
+const maxUniqueAttempts = 10000
+
 // uniquePath finds a name nothing is using. Lstat, because a dangling link
 // reads as free to Stat and a create would then write through it, to wherever
-// the link names.
-func uniquePath(dir, stem, ext string) string {
+// the link names. Any answer but "exists" or "does not exist" (a name too long, a
+// folder it cannot read) stops the search: the next number would get the same answer.
+func uniquePath(dir, stem, ext string) (string, error) {
 	candidate := filepath.Join(dir, stem+ext)
-	if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
-		return candidate
-	}
-	for i := 2; ; i++ {
-		candidate = filepath.Join(dir, fmt.Sprintf("%s %d%s", stem, i, ext))
+	for i := 2; i <= maxUniqueAttempts; i++ {
 		if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
-			return candidate
+			return candidate, nil
+		} else if err != nil {
+			return "", err
 		}
+		candidate = filepath.Join(dir, fmt.Sprintf("%s %d%s", stem, i, ext))
 	}
+	return "", fmt.Errorf("no free name for %q after %d tries", stem+ext, maxUniqueAttempts)
 }
 
 // writeNewFile creates a file that must not already exist. O_EXCL also refuses
@@ -3227,17 +3316,8 @@ func writeNewFile(abs string, data []byte, mode fs.FileMode) error {
 	return f.Close()
 }
 
-func uniqueDir(parent, base string) string {
-	candidate := filepath.Join(parent, base)
-	if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
-		return candidate
-	}
-	for i := 2; ; i++ {
-		candidate = filepath.Join(parent, fmt.Sprintf("%s %d", base, i))
-		if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
-			return candidate
-		}
-	}
+func uniqueDir(parent, base string) (string, error) {
+	return uniquePath(parent, base, "")
 }
 
 func copyFile(src, dst string, mode fs.FileMode) error {

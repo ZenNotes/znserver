@@ -75,7 +75,10 @@ func (v *Vault) DuplicateAsset(rel string) (AssetMeta, error) {
 	}
 	ext := filepath.Ext(srcAbs)
 	stem := strings.TrimSuffix(filepath.Base(srcAbs), ext)
-	destAbs := uniquePath(filepath.Dir(srcAbs), stem+" copy", ext)
+	destAbs, err := uniquePath(filepath.Dir(srcAbs), stem+" copy", ext)
+	if err != nil {
+		return AssetMeta{}, err
+	}
 	if err := copyFile(srcAbs, destAbs, v.fileMode); err != nil {
 		return AssetMeta{}, err
 	}
@@ -230,7 +233,10 @@ func (v *Vault) RestoreDeletedAsset(deleted DeletedAsset) (AssetMeta, error) {
 	}
 	base := filepath.Base(targetAbs)
 	ext := filepath.Ext(base)
-	finalAbs := uniquePath(targetDir, strings.TrimSuffix(base, ext), ext)
+	finalAbs, err := uniquePath(targetDir, strings.TrimSuffix(base, ext), ext)
+	if err != nil {
+		return AssetMeta{}, err
+	}
 	if err := os.Rename(srcAbs, finalAbs); err != nil {
 		return AssetMeta{}, err
 	}

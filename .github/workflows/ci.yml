@@ -12,13 +12,31 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: 1.26.x
       - run: go vet ./...
       - run: go test ./...
       - run: go build -trimpath -o bin/server-api ./cmd/zennotes-server
       - run: go run ./cmd/prepare-web -manifest web-artifact/manifest.json -output web/dist
       - run: go test -tags=embed_web ./web
       - run: go build -tags=embed_web -trimpath -o bin/zennotes-server ./cmd/zennotes-server
+  # The shared scope contract through a real /mcp, from the tui tag go.mod pins. The
+  # tests only skip when the binary is not set, so nothing here can skip.
+  mcp-contract:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.26.x
+      - run: go build -trimpath -o "$RUNNER_TEMP/zennotes-server" ./cmd/zennotes-server
+      - run: git clone --depth 1 --branch "$(go list -m -f '{{.Version}}' github.com/ZenNotes/tui)" https://github.com/ZenNotes/tui.git "$RUNNER_TEMP/tui"
+      - run: go test -count=1 -run 'ThroughHTTP|TestHTTPMCP' ./internal/mcp
+        working-directory: ${{ runner.temp }}/tui
+        env:
+          ZENNOTES_SERVER_MCP_CONTRACT_BINARY: ${{ runner.temp }}/zennotes-server
   docker:
     runs-on: ubuntu-latest
     steps:
@@ -29,6 +47,25 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: false
+  # What a scratch image lacks only shows when it runs: an upload over 8 MiB needs /tmp.
+  docker-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: zennotes:ci
+      - name: Upload 12 MiB to the running image
+        run: |
+          mkdir vault data
+          chmod 777 vault data
+          docker run -d --name zennotes -p 127.0.0.1:7878:7878 -v "$PWD/vault:/workspace" -v "$PWD/data:/data" -e ZENNOTES_AUTH_TOKEN=ci-token zennotes:ci
+          for attempt in $(seq 1 30); do curl -fs http://127.0.0.1:7878/healthz && break; sleep 1; done
+          head -c 12582912 /dev/zero > big.bin
+          curl -fsS -H 'Authorization: Bearer ci-token' -F file=@big.bin http://127.0.0.1:7878/api/assets/upload
   nix:
     runs-on: ubuntu-latest
     steps:

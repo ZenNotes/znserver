@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"mime/multipart"
@@ -194,6 +195,129 @@ func TestUploadAssetRespects413(t *testing.T) {
 		// to 413 if the multipart parser somehow lets it through. Either
 		// is acceptable here.
 		t.Fatalf("expected 4xx large-body rejection, got %d", resp.StatusCode)
+	}
+}
+
+// An upload over 8 MiB spills to a temp file, which must not outlive the request.
+func TestUploadLeavesNoTempFile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	root := t.TempDir()
+	server, _ := newTestServer(t, config.Config{
+		VaultPath:     root,
+		Bind:          "127.0.0.1:7878",
+		AuthToken:     "secret-token",
+		MaxAssetBytes: 50 << 20,
+		MaxNoteBytes:  10 << 20,
+	})
+	client := &http.Client{Jar: loginAndJar(t, server, "secret-token")}
+	upload := func() int {
+		body := &bytes.Buffer{}
+		mw := multipart.NewWriter(body)
+		part, _ := mw.CreateFormFile("file", "big.bin")
+		_, _ = part.Write(bytes.Repeat([]byte("a"), 12<<20))
+		_ = mw.Close()
+		resp, err := client.Post(server.URL+"/api/assets/upload", mw.FormDataContentType(), body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	if status := upload(); status != http.StatusOK {
+		t.Fatalf("upload: %d", status)
+	}
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("left behind: %v", entries)
+	}
+}
+
+// A vault's files are not this site's code. A path-scoped token can write one, and the
+// owner's browser session is what views it.
+func TestRawAssetsCannotRunAsThisSite(t *testing.T) {
+	root := t.TempDir()
+	server, _ := newTestServer(t, config.Config{VaultPath: root, AuthToken: "secret-token", MaxAssetBytes: 1 << 20, MaxNoteBytes: 1 << 20})
+	if err := os.MkdirAll(filepath.Join(root, "assets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, body, wantType string
+		sandbox              bool
+	}{
+		{"a.html", "<!doctype html><script>x</script>", "text/html", true},
+		{"a.xhtml", "<html/>", "application/xhtml+xml", true},
+		{"a.xml", "<a/>", "xml", true},
+		{"a.svg", `<svg xmlns="http://www.w3.org/2000/svg"><script>x</script></svg>`, "image/svg+xml", true},
+		{"a.js", "fetch('/api/notes')", "text/plain", true},
+		{"a.mjs", "fetch('/api/notes')", "text/plain", true},
+		{"unknown.bin2", "<!doctype html><script>x</script>", "text/html", true},
+		{"a.png", "\x89PNG\r\n\x1a\n", "image/png", true},
+		{"a.pdf", "%PDF-1.4", "application/pdf", false},
+	}
+	for _, c := range cases {
+		if err := os.WriteFile(filepath.Join(root, "assets", c.name), []byte(c.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		request, _ := http.NewRequest(http.MethodGet, server.URL+"/api/assets/raw?path=assets/"+c.name, nil)
+		request.Header.Set("Authorization", "Bearer secret-token")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Errorf("%s: %d", c.name, response.StatusCode)
+		}
+		if got := response.Header.Get("Content-Type"); !strings.Contains(got, c.wantType) {
+			t.Errorf("%s: type %q, want %q", c.name, got, c.wantType)
+		}
+		csp := response.Header.Get("Content-Security-Policy")
+		if strings.Contains(csp, "sandbox") != c.sandbox {
+			t.Errorf("%s: CSP %q", c.name, csp)
+		}
+		if !strings.Contains(csp, "frame-ancestors") || response.Header.Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s: lost the site's headers: %q", c.name, csp)
+		}
+	}
+}
+
+func TestCORSLogKeepsAnEnd(t *testing.T) {
+	root := t.TempDir()
+	v, err := vault.New(root, vault.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(v, nil, nil, config.Config{VaultPath: root})
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+	for i := range maxLoggedOrigins + 50 {
+		s.logCORSRejection(fmt.Sprintf("https://%d.example", i))
+	}
+	if strings.ContainsRune(logged.String(), '\u2014') {
+		t.Error("the log line holds a long dash")
+	}
+	if got := s.loggedOriginCount.Load(); got != maxLoggedOrigins {
+		t.Errorf("remembered %d origins", got)
+	}
+}
+
+func TestPreflightAllowsMCPProtocolHeader(t *testing.T) {
+	root := t.TempDir()
+	server, _ := newTestServer(t, config.Config{VaultPath: root, AuthToken: "secret-token", AllowedOrigins: []string{"https://ok.example"}})
+	request, _ := http.NewRequest(http.MethodOptions, server.URL+"/api/notes", nil)
+	request.Header.Set("Origin", "https://ok.example")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if got := response.Header.Get("Access-Control-Allow-Headers"); !strings.Contains(got, "Mcp-Protocol-Version") {
+		t.Errorf("allowed headers: %q", got)
 	}
 }
 

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS build
 WORKDIR /source
 COPY go.mod go.sum ./
 RUN go mod download
@@ -10,11 +10,15 @@ RUN if [ "$ALLOW_DIRTY" = true ]; then go run ./cmd/prepare-web -manifest web-ar
 RUN go test -tags=embed_web ./web
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -tags=embed_web -trimpath -ldflags="-s -w" -o /out/zennotes-server ./cmd/zennotes-server
+# A scratch image has no /tmp, and an upload over 8 MiB spills to a temp file. COPY
+# keeps a folder's mode only for what is inside the folder it copies, hence the parent.
+RUN mkdir -p /out/root/tmp && chmod 1777 /out/root/tmp
 FROM scratch
 LABEL org.opencontainers.image.title="ZenNotes" \
       org.opencontainers.image.description="Self-hosted ZenNotes server with a pinned browser artifact." \
       org.opencontainers.image.source="https://github.com/ZenNotes/znserver"
 COPY --from=build /out/zennotes-server /zennotes-server
+COPY --from=build /out/root/ /
 ENV ZENNOTES_BIND=0.0.0.0:7878 \
     ZENNOTES_CONFIG_PATH=/data/server.json \
     ZENNOTES_DEFAULT_VAULT_PATH=/workspace \

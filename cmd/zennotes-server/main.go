@@ -29,12 +29,18 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	// First, so a bug report carries the version even when startup fails below.
 	log.Printf("ZenNotes Server: v%s", znserver.Version())
+	applyMemoryLimit()
 
 	cfg := config.Load()
 	if strings.TrimSpace(cfg.AuthToken) == "" && !cfg.AllowInsecureNoAuth && !bindIsLoopback(cfg.Bind) {
 		log.Fatal("refusing to start without an auth token on a non-loopback bind; set ZENNOTES_AUTH_TOKEN, point ZENNOTES_AUTH_TOKEN_FILE at a readable token file, or set ZENNOTES_ALLOW_INSECURE_NOAUTH=1 to override")
 	}
+	mcpCfg, err := config.LoadMCP()
+	if err != nil {
+		log.Fatalf("refusing to start: %v", err)
+	}
 	logStartupBanner(cfg)
+	logMCPBanner(cfg, mcpCfg)
 
 	v, err := vault.New(cfg.VaultPath, vault.Options{
 		FileMode:      cfg.VaultFileMode,
@@ -71,12 +77,10 @@ func main() {
 	}
 
 	srv := httpserver.New(v, w, dist, cfg)
-	httpSrv := &http.Server{
-		Addr:         cfg.Bind,
-		Handler:      srv.Router(),
-		ReadTimeout:  0, // Websocket-friendly.
-		WriteTimeout: 0,
+	if err := srv.EnableMCP(mcpCfg); err != nil {
+		log.Fatalf("refusing to start: %v", err)
 	}
+	httpSrv := newHTTPServer(cfg.Bind, srv.Router())
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -98,6 +102,17 @@ func main() {
 	shutdownCtx, stopShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stopShutdown()
 	_ = httpSrv.Shutdown(shutdownCtx)
+}
+
+func newHTTPServer(bind string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:         bind,
+		Handler:      handler,
+		ReadTimeout:  0, // Websocket-friendly.
+		WriteTimeout: 0,
+		// Headers come first on every request, websockets included.
+		ReadHeaderTimeout: 30 * time.Second,
+	}
 }
 
 // logVaultPermissionHelp turns the cryptic "mkdir … permission denied" into
@@ -130,6 +145,20 @@ func logStartupBanner(cfg config.Config) {
 		log.Printf("WARNING: bound to a non-loopback address without ZENNOTES_BEHIND_TLS=1.")
 		log.Printf("WARNING: put a TLS-terminating reverse proxy in front before exposing publicly.")
 	}
+}
+
+// logMCPBanner says whether /mcp exists, and for whom. It names credentials, which
+// are labels the operator chose, and nothing else about them.
+func logMCPBanner(cfg config.Config, m config.MCPConfig) {
+	if !m.Enabled {
+		log.Printf("mcp:          off (set ZENNOTES_MCP_ENABLED=1 to serve %s/mcp)", cfg.BasePath)
+		return
+	}
+	names := make([]string, 0, len(m.Credentials))
+	for _, c := range m.Credentials {
+		names = append(names, c.Name)
+	}
+	log.Printf("mcp:          on at %s/mcp, credentials: %s", cfg.BasePath, strings.Join(names, ", "))
 }
 
 // corsMode describes the effective cross-origin policy at a glance, so an

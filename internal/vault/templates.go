@@ -103,21 +103,24 @@ func (v *Vault) resolveTemplatePath(sourcePath string) (string, error) {
 // uniqueTemplateSlug picks a free slug. Editing the same file keeps its slug
 // (the write lands in place); otherwise the slug is de-duplicated against the
 // files already there (adr, adr-2, adr-3, ...).
-func uniqueTemplateSlug(dir, base, previousSourcePath string) string {
+func uniqueTemplateSlug(dir, base, previousSourcePath string) (string, error) {
 	prevStem := ""
 	if previousSourcePath != "" {
 		prevStem = templateFilenameStem(previousSourcePath)
 	}
 	candidate := base
-	for n := 2; ; n++ {
+	for n := 2; n <= maxUniqueAttempts; n++ {
 		if candidate == prevStem {
-			return candidate
+			return candidate, nil
 		}
 		if _, err := os.Lstat(filepath.Join(dir, candidate+".md")); errors.Is(err, os.ErrNotExist) {
-			return candidate
+			return candidate, nil
+		} else if err != nil {
+			return "", err
 		}
 		candidate = fmt.Sprintf("%s-%d", base, n)
 	}
+	return "", fmt.Errorf("no free name for template %q after %d tries", base, maxUniqueAttempts)
 }
 
 // ListTemplates returns every custom template with its raw bytes. A vault
@@ -184,7 +187,10 @@ func (v *Vault) WriteTemplate(input WriteTemplateInput) (CustomTemplateFile, err
 		previous = abs
 	}
 	dir := templateDir(v.root)
-	slug := uniqueTemplateSlug(dir, safeTemplateSlug(input.Slug), input.PreviousSourcePath)
+	slug, err := uniqueTemplateSlug(dir, safeTemplateSlug(input.Slug), input.PreviousSourcePath)
+	if err != nil {
+		return CustomTemplateFile{}, err
+	}
 	sourcePath := templateSourcePath(slug + ".md")
 	abs, err := v.resolveTemplatePath(sourcePath)
 	if err != nil {
