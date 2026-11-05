@@ -14,9 +14,8 @@ func corsHeaders(t *testing.T, cfg config.Config, origin string) http.Header {
 	cfg.VaultPath = root
 	cfg.DefaultVaultPath = root
 	if cfg.Bind == "" {
-		// A non-loopback bind, so the loopback exemption never masks the
-		// behaviour under test.
-		cfg.Bind = "192.0.2.10:7878"
+		// The bind the binary ships with, so the default is what is tested.
+		cfg.Bind = "127.0.0.1:7878"
 	}
 	server, _ := newTestServer(t, cfg)
 
@@ -94,10 +93,30 @@ func TestCORSWildcardAllowsAnyOriginWithoutCredentials(t *testing.T) {
 }
 
 func TestCORSRejectsUnlistedOriginByDefault(t *testing.T) {
-	cfg := config.Config{AuthToken: "secret-token"}
-	headers := corsHeaders(t, cfg, "https://evil.example")
-	if got := headers.Get("Access-Control-Allow-Origin"); got != "" {
-		t.Errorf("unlisted origin must not be echoed, got %q", got)
+	// Another port on the same machine is another origin like any other, on
+	// both shipped binds.
+	for _, bind := range []string{"127.0.0.1:7878", "0.0.0.0:7878"} {
+		for _, origin := range []string{"https://evil.example", "http://127.0.0.1:9999", "http://localhost:3000"} {
+			headers := corsHeaders(t, config.Config{AuthToken: "secret-token", Bind: bind}, origin)
+			if got := headers.Get("Access-Control-Allow-Origin"); got != "" {
+				t.Errorf("%s: unlisted origin %s must not be echoed, got %q", bind, origin, got)
+			}
+			if got := headers.Get("Access-Control-Allow-Credentials"); got != "" {
+				t.Errorf("%s: unlisted origin %s got credentials %q", bind, origin, got)
+			}
+		}
+	}
+}
+
+func TestCORSDevModeAdmitsLoopbackOrigins(t *testing.T) {
+	for _, bind := range []string{"127.0.0.1:7878", "0.0.0.0:7878"} {
+		headers := corsHeaders(t, config.Config{AuthToken: "secret-token", Bind: bind, DevMode: true}, "http://localhost:5173")
+		if got := headers.Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+			t.Errorf("%s: dev mode Allow-Origin = %q", bind, got)
+		}
+		if got := headers.Get("Access-Control-Allow-Credentials"); got != "true" {
+			t.Errorf("%s: dev mode credentials = %q", bind, got)
+		}
 	}
 }
 
@@ -107,7 +126,7 @@ func TestCORSAllowsSameOriginWithCredentials(t *testing.T) {
 	server, _ := newTestServer(t, config.Config{
 		VaultPath:        root,
 		DefaultVaultPath: root,
-		Bind:             "192.0.2.10:7878",
+		Bind:             "127.0.0.1:7878",
 		AuthToken:        "secret-token",
 	})
 	req, err := http.NewRequest(http.MethodOptions, server.URL+"/api/capabilities", nil)
@@ -130,7 +149,7 @@ func TestCORSPreflightShortCircuits(t *testing.T) {
 	root := t.TempDir()
 	cfg.VaultPath = root
 	cfg.DefaultVaultPath = root
-	cfg.Bind = "192.0.2.10:7878"
+	cfg.Bind = "127.0.0.1:7878"
 	server, _ := newTestServer(t, cfg)
 
 	req, err := http.NewRequest(http.MethodOptions, server.URL+"/api/capabilities", nil)

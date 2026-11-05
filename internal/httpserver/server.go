@@ -185,6 +185,7 @@ func (s *Server) Router() http.Handler {
 	// clientAddressKey() does trust-aware extraction instead.
 	outer.Use(s.securityHeadersMiddleware)
 	outer.Use(s.corsMiddleware)
+	outer.Use(s.crossSiteGuard)
 	outer.Use(middleware.Recoverer)
 
 	s.self = outer
@@ -401,8 +402,35 @@ func errorCodeForStatus(status int) string {
 	}
 }
 
+// readJSON decodes a request body that says it is JSON, and refuses any other.
+// An HTML form can send text/plain, urlencoded or multipart to any site with no
+// preflight, and a text/plain body can hold valid JSON, so the label is what
+// tells a client's request from a form's. application/json cannot come from a
+// form, and every client of this API sends it.
 func readJSON[T any](r *http.Request, out *T) error {
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		return httpStatusError{
+			code: http.StatusUnsupportedMediaType,
+			msg:  "request body must be JSON sent as Content-Type: application/json",
+		}
+	}
 	return json.NewDecoder(r.Body).Decode(out)
+}
+
+func isJSONContentType(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
+	return err == nil && mediaType == "application/json"
+}
+
+// writeBodyError answers a body readJSON could not take: 415 for one that is not
+// JSON, 400 for JSON that does not decode.
+func writeBodyError(w http.ResponseWriter, err error) {
+	var statusErr httpStatusError
+	if errors.As(err, &statusErr) {
+		http.Error(w, statusErr.Error(), statusErr.code)
+		return
+	}
+	http.Error(w, err.Error(), http.StatusBadRequest)
 }
 
 // --- Handlers: meta ---
@@ -495,7 +523,7 @@ func (s *Server) vaultSettings(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) setVaultSettings(w http.ResponseWriter, r *http.Request) {
 	var req vault.VaultSettings
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	settings, err := s.currentVault().SetSettings(req)
@@ -515,7 +543,7 @@ func (s *Server) selectVault(w http.ResponseWriter, r *http.Request) {
 		Path string `json:"path"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	if strings.TrimSpace(req.Path) == "" {
@@ -730,7 +758,7 @@ func (s *Server) writeComments(w http.ResponseWriter, r *http.Request) {
 		Comments []vault.NoteComment `json:"comments"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	comments, err := s.currentVault().WriteNoteComments(req.Path, req.Comments)
@@ -749,7 +777,7 @@ func (s *Server) writeNote(w http.ResponseWriter, r *http.Request) {
 		Body string `json:"body"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().WriteNote(req.Path, req.Body)
@@ -767,7 +795,7 @@ func (s *Server) createNote(w http.ResponseWriter, r *http.Request) {
 		Subpath string           `json:"subpath"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().CreateNote(req.Folder, req.Title, req.Subpath)
@@ -785,7 +813,7 @@ func (s *Server) createExcalidraw(w http.ResponseWriter, r *http.Request) {
 		Subpath string           `json:"subpath"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().CreateExcalidraw(req.Folder, req.Title, req.Subpath)
@@ -802,7 +830,7 @@ func (s *Server) renameNote(w http.ResponseWriter, r *http.Request) {
 		Title string `json:"title"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().RenameNote(req.Path, req.Title)
@@ -818,7 +846,7 @@ func (s *Server) deleteNote(w http.ResponseWriter, r *http.Request) {
 		Path string `json:"path"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	if err := s.currentVault().DeleteNote(req.Path); err != nil {
@@ -833,7 +861,7 @@ func (s *Server) trashNote(w http.ResponseWriter, r *http.Request) {
 		Path string `json:"path"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().MoveToTrash(req.Path)
@@ -849,7 +877,7 @@ func (s *Server) restoreNote(w http.ResponseWriter, r *http.Request) {
 		Path string `json:"path"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().RestoreFromTrash(req.Path)
@@ -873,7 +901,7 @@ func (s *Server) archiveNote(w http.ResponseWriter, r *http.Request) {
 		Path string `json:"path"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().ArchiveNote(req.Path)
@@ -889,7 +917,7 @@ func (s *Server) unarchiveNote(w http.ResponseWriter, r *http.Request) {
 		Path string `json:"path"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().UnarchiveNote(req.Path)
@@ -905,7 +933,7 @@ func (s *Server) duplicateNote(w http.ResponseWriter, r *http.Request) {
 		Path string `json:"path"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().DuplicateNote(req.Path)
@@ -923,7 +951,7 @@ func (s *Server) moveNote(w http.ResponseWriter, r *http.Request) {
 		TargetSubpath string           `json:"targetSubpath"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().MoveNote(req.Path, req.TargetFolder, req.TargetSubpath)
@@ -942,7 +970,7 @@ func (s *Server) createFolder(w http.ResponseWriter, r *http.Request) {
 		Subpath string           `json:"subpath"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	if err := s.currentVault().CreateFolder(req.Folder, req.Subpath); err != nil {
@@ -959,7 +987,7 @@ func (s *Server) renameFolder(w http.ResponseWriter, r *http.Request) {
 		NewSubpath string           `json:"newSubpath"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	out, err := s.currentVault().RenameFolder(req.Folder, req.OldSubpath, req.NewSubpath)
@@ -976,7 +1004,7 @@ func (s *Server) deleteFolder(w http.ResponseWriter, r *http.Request) {
 		Subpath string           `json:"subpath"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	if err := s.currentVault().DeleteFolder(req.Folder, req.Subpath); err != nil {
@@ -992,7 +1020,7 @@ func (s *Server) duplicateFolder(w http.ResponseWriter, r *http.Request) {
 		Subpath string           `json:"subpath"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	out, err := s.currentVault().DuplicateFolder(req.Folder, req.Subpath)
@@ -1152,7 +1180,7 @@ func (s *Server) renameAsset(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().RenameAsset(req.Path, req.Name)
@@ -1169,7 +1197,7 @@ func (s *Server) moveAsset(w http.ResponseWriter, r *http.Request) {
 		TargetDir string `json:"targetDir"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().MoveAsset(req.Path, req.TargetDir)
@@ -1185,7 +1213,7 @@ func (s *Server) duplicateAsset(w http.ResponseWriter, r *http.Request) {
 		Path string `json:"path"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().DuplicateAsset(req.Path)
@@ -1201,7 +1229,7 @@ func (s *Server) deleteAsset(w http.ResponseWriter, r *http.Request) {
 		Path string `json:"path"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	deleted, err := s.currentVault().DeleteAsset(req.Path)
@@ -1224,7 +1252,7 @@ func (s *Server) listDeletedAssets(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) restoreDeletedAsset(w http.ResponseWriter, r *http.Request) {
 	var req vault.DeletedAsset
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	meta, err := s.currentVault().RestoreDeletedAsset(req)
@@ -1240,7 +1268,7 @@ func (s *Server) purgeDeletedAsset(w http.ResponseWriter, r *http.Request) {
 		UndoToken string `json:"undoToken"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	if err := s.currentVault().PurgeDeletedAsset(req.UndoToken); err != nil {
@@ -1266,16 +1294,17 @@ func (s *Server) emptyDeletedAssets(w http.ResponseWriter, _ *http.Request) {
 var watchPingInterval = 25 * time.Second
 
 func (s *Server) watchWS(w http.ResponseWriter, r *http.Request) {
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	if origin != "" && !s.isAllowedOrigin(r, origin) {
-		if !s.wsRejectLimiter.allow(s.clientAddressKey(r)) {
-			http.Error(w, "too many invalid websocket origins", http.StatusTooManyRequests)
-			return
-		}
-		http.Error(w, "forbidden origin", http.StatusForbidden)
+	// crossSiteGuard refuses an untrusted handshake before routing. The same
+	// decision runs again here so the feed stays closed to other pages even if
+	// it is ever mounted where the guard does not reach.
+	if s.crossSiteVerdict(r) == siteRefused {
+		http.Error(w, "cross-site request refused", http.StatusForbidden)
 		return
 	}
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		// The library's own check admits only an Origin that matches Host, which
+		// would refuse ZENNOTES_ALLOWED_ORIGINS and dev mode. crossSiteVerdict
+		// above is the origin check.
 		InsecureSkipVerify: true,
 	})
 	if err != nil {

@@ -337,10 +337,13 @@ compiles frontend source.
 instead of a local folder. See
 [Connect desktop to a remote server](https://github.com/ZenNotes/zennotes/blob/main/docs/how-to/connect-desktop-to-remote-server.md).
 
-**Scripts and other clients.** Send the token as a bearer header:
+**Scripts and other clients.** Send the token as a bearer header, and send
+JSON bodies as `application/json` (any other `Content-Type` gets a 415):
 
 ```sh
 curl -H "Authorization: Bearer $ZENNOTES_AUTH_TOKEN" http://localhost:7878/api/notes
+curl -H "Authorization: Bearer $ZENNOTES_AUTH_TOKEN" -H "Content-Type: application/json" \
+  -d '{"path":"inbox/Hello.md","body":"# Hello"}' http://localhost:7878/api/notes/write
 ```
 
 ## Configuration
@@ -366,7 +369,7 @@ the token from the UI. Environment variables win over the file.
 | --- | --- | --- |
 | `ZENNOTES_BEHIND_TLS` | off | Declare that a TLS-terminating proxy is in front. Marks cookies `Secure` and sends HSTS. |
 | `ZENNOTES_TRUSTED_PROXIES` | none | Comma-separated IPs or CIDRs whose `X-Forwarded-*` headers are honoured. Set this when the proxy is not on loopback. |
-| `ZENNOTES_ALLOWED_ORIGINS` | none | Comma-separated browser origins allowed to call the API cross-origin. `*` allows all but withholds the session cookie. The desktop app does not need this. |
+| `ZENNOTES_ALLOWED_ORIGINS` | none | Comma-separated browser origins allowed to call the API cross-origin. Any other origin, including another port on the same machine, may not read answers, change the vault or open the watch socket. `*` allows all but withholds the session cookie. The desktop app, `zn` and the phone apps do not need this. |
 | `ZENNOTES_BROWSE_ROOTS` | the vault path | Directories the vault picker may offer. Anything outside is rejected. |
 | `ZENNOTES_ALLOW_UNSCOPED_BROWSE` | off | Let the vault picker browse the whole filesystem. |
 | `ZENNOTES_PERSIST_SESSIONS` | off | Save browser sessions to `sessions.json` (mode `0600`) so logins survive restarts. |
@@ -387,7 +390,7 @@ the token from the UI. Environment variables win over the file.
 | --- | --- | --- |
 | `ZENNOTES_DEFAULT_VAULT_PATH` | none | Vault used when neither the env var nor the config file names one. The Docker image sets it to `/workspace`. |
 | `ZENNOTES_DISABLE_WATCHER` | off | Turn off the inotify watcher. Live refresh stops but the vault is fully served. Use on unprivileged LXC hosts where inotify wedges. |
-| `ZENNOTES_DEV` | off | Accept loopback browser origins, such as a Vite dev server, on a non-loopback bind. |
+| `ZENNOTES_DEV` | off | Accept any loopback browser origin, such as a Vite dev server, with the session cookie. For development only: every page served from this machine gets the same access. |
 
 ### MCP
 

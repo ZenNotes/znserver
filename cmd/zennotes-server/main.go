@@ -164,16 +164,26 @@ func logMCPBanner(cfg config.Config, m config.MCPConfig) {
 // corsMode describes the effective cross-origin policy at a glance, so an
 // operator can see what is allowed at startup instead of inferring it from
 // rejection lines after a client fails. (#482)
+//
+// It names exactly the rules originDecisionFor applies. The bind is not one of
+// them: listening on loopback admits no extra origin.
 func corsMode(cfg config.Config) string {
+	dev := ""
+	if cfg.DevMode {
+		dev = " plus any loopback origin with credentials (ZENNOTES_DEV)"
+	}
 	for _, origin := range cfg.AllowedOrigins {
 		if strings.TrimSpace(origin) == httpserver.AllowAllOrigins {
-			return "any origin (ZENNOTES_ALLOWED_ORIGINS=*; credentials withheld cross-origin)"
+			return "any origin (ZENNOTES_ALLOWED_ORIGINS=*; credentials withheld cross-origin)" + dev
 		}
 	}
 	if len(cfg.AllowedOrigins) == 0 {
+		if cfg.DevMode {
+			return "same-origin" + dev
+		}
 		return "same-origin only (set ZENNOTES_ALLOWED_ORIGINS for browser or WebView clients)"
 	}
-	return fmt.Sprintf("same-origin plus %s", strings.Join(cfg.AllowedOrigins, ", "))
+	return fmt.Sprintf("same-origin plus %s", strings.Join(cfg.AllowedOrigins, ", ")) + dev
 }
 
 func warnInsecureExposureLoop(ctx context.Context) {

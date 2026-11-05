@@ -42,7 +42,7 @@ func (s *Server) writeTemplate(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "template exceeds the configured note size limit", http.StatusRequestEntityTooLarge)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	// The envelope allowance above is for field names and JSON escaping, not
@@ -66,7 +66,7 @@ func (s *Server) deleteTemplate(w http.ResponseWriter, r *http.Request) {
 		SourcePath string `json:"sourcePath"`
 	}
 	if err := readJSON(r, &request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	if err := s.currentVault().DeleteTemplate(request.SourcePath); err != nil {

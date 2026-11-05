@@ -368,19 +368,135 @@ func (s *Server) originDecisionFor(r *http.Request, origin string) originDecisio
 			wildcard = true
 		}
 	}
+
+	// Loopback origins are admitted in dev mode only, and before the wildcard so
+	// a Vite dev server keeps its session either way. The bind does not enter
+	// into it. The session cookie is SameSite, and a site is a host with no
+	// port, so every page served from any port on this machine counts as the
+	// same site and carries the cookie. An operator who wants one particular
+	// port lists it in ZENNOTES_ALLOWED_ORIGINS.
+	if cfg.DevMode && isLoopbackOrigin(normalized) {
+		return originDecision{allowed: true, credentials: true}
+	}
 	if wildcard {
 		return originDecision{allowed: true}
-	}
-
-	if (cfg.DevMode || isLoopbackBind(cfg.Bind)) && isLoopbackOrigin(normalized) {
-		return originDecision{allowed: true, credentials: true}
 	}
 
 	return originDecision{}
 }
 
-func (s *Server) isAllowedOrigin(r *http.Request, origin string) bool {
-	return s.originDecisionFor(r, origin).allowed
+// siteVerdict is how the cross-site guard treats one request.
+type siteVerdict int
+
+const (
+	siteRefused siteVerdict = iota
+	siteAllowed
+	// siteAllowedWithoutSession lets the request through with its session cookie
+	// removed: an origin the operator admitted only through the wildcard, which
+	// may use a bearer token of its own but never the person's browser session.
+	siteAllowedWithoutSession
+)
+
+// crossSiteVerdict decides whether a state-changing request, or a watch socket,
+// came from this server's own pages, from an origin the operator allowed, or
+// from no browser at all.
+//
+// CORS cannot answer this. It only governs whether a page may read a response,
+// and a form POST (enctype text/plain, urlencoded or multipart) or a WebSocket
+// is sent before any CORS check, with the cookie attached whenever the browser
+// counts the page as the same site.
+//
+// Browsers say where a request came from in Sec-Fetch-Site, which a page cannot
+// set. When it is missing (an older browser) Origin decides, which browsers send
+// on every POST and every WebSocket handshake. A request carrying neither is not
+// from a browser: the desktop app's main process, the zn CLI, the phone apps'
+// native HTTP and MCP clients all send none, and none of them holds a browser's
+// cookie. Node's fetch sends Sec-Fetch-Mode but no Sec-Fetch-Site, so only Site
+// is read here.
+func (s *Server) crossSiteVerdict(r *http.Request) siteVerdict {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	switch strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))) {
+	case "same-origin", "none":
+		// "none" is a request the person started themselves, such as a
+		// bookmark, which no page can trigger.
+		return siteAllowed
+	case "":
+		if origin == "" {
+			return siteAllowed
+		}
+	default:
+		// same-site, cross-site, or a value from a future browser.
+		if origin == "" {
+			return siteRefused
+		}
+	}
+	decision := s.originDecisionFor(r, origin)
+	switch {
+	case !decision.allowed:
+		return siteRefused
+	case !decision.credentials:
+		return siteAllowedWithoutSession
+	default:
+		return siteAllowed
+	}
+}
+
+func isSafeMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	return false
+}
+
+func isWebSocketUpgrade(r *http.Request) bool {
+	for _, value := range strings.Split(r.Header.Get("Upgrade"), ",") {
+		if strings.EqualFold(strings.TrimSpace(value), "websocket") {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutSessionCookie drops the session cookie from a request and keeps any
+// other cookie.
+func withoutSessionCookie(r *http.Request) {
+	cookies := r.Cookies()
+	r.Header.Del("Cookie")
+	for _, cookie := range cookies {
+		if cookie.Name != sessionCookieName {
+			r.AddCookie(cookie)
+		}
+	}
+}
+
+// crossSiteGuard holds back every request that can change the vault or open the
+// watch socket until crossSiteVerdict passes it. Reads need no guard: a page on
+// another origin can send one, but CORS keeps the answer from it.
+func (s *Server) crossSiteGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrade := isWebSocketUpgrade(r)
+		if isSafeMethod(r.Method) && !upgrade {
+			next.ServeHTTP(w, r)
+			return
+		}
+		switch s.crossSiteVerdict(r) {
+		case siteAllowed:
+		case siteAllowedWithoutSession:
+			withoutSessionCookie(r)
+		default:
+			if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+				s.logCORSRejection(origin)
+			}
+			if upgrade && !s.wsRejectLimiter.allow(s.clientAddressKey(r)) {
+				http.Error(w, "too many invalid websocket origins", http.StatusTooManyRequests)
+				return
+			}
+			http.Error(w, "cross-site request refused", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
@@ -551,7 +667,7 @@ func (s *Server) sessionLogin(w http.ResponseWriter, r *http.Request) {
 		Token string `json:"token"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	if subtleCompare(strings.TrimSpace(req.Token), strings.TrimSpace(cfg.AuthToken)) {
@@ -593,7 +709,7 @@ func (s *Server) sessionRotateToken(w http.ResponseWriter, r *http.Request) {
 		NewToken     string `json:"newToken"`
 	}
 	if err := readJSON(r, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	current := strings.TrimSpace(req.CurrentToken)

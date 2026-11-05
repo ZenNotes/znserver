@@ -26,7 +26,7 @@ func (s *Server) writeWorkflow(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, cfg.MaxNoteBytes+jsonEnvelopeBytes)
 	var input vault.WriteWorkflowInput
 	if err := readJSON(r, &input); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	file, err := s.currentVault().WriteWorkflow(input)
@@ -43,7 +43,7 @@ func (s *Server) deleteWorkflow(w http.ResponseWriter, r *http.Request) {
 		SourcePath string `json:"sourcePath"`
 	}
 	if err := readJSON(r, &request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	if err := s.currentVault().DeleteWorkflow(request.SourcePath); err != nil {
@@ -57,7 +57,7 @@ func (s *Server) applyWorkflow(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxWorkflowRequestBytes)
 	var input vault.PreparedWorkflowRun
 	if err := readJSON(r, &input); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	cfg := s.currentConfig()
@@ -85,7 +85,7 @@ func (s *Server) undoWorkflowRun(w http.ResponseWriter, r *http.Request) {
 		RunID string `json:"runId"`
 	}
 	if err := readJSON(r, &request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	result, err := s.currentVault().UndoWorkflowRun(request.RunID)
@@ -111,7 +111,7 @@ func (s *Server) deleteWorkflowRuns(w http.ResponseWriter, r *http.Request) {
 		WorkflowID string `json:"workflowId"`
 	}
 	if err := readJSON(r, &request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeBodyError(w, err)
 		return
 	}
 	workflowID := strings.TrimSpace(request.WorkflowID)
