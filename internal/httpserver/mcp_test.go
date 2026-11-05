@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -179,7 +180,8 @@ func TestMCPCallsReachTheAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows reports 666 for any file a user can write.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("a note made over MCP has mode %o", info.Mode().Perm())
 	}
 	if text, failed := mcpCall(t, url, "list_notes", map[string]any{}); failed || !strings.Contains(text, "Made") {

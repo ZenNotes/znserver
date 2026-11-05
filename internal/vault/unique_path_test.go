@@ -110,7 +110,11 @@ func TestUniquePathStopsOnAnError(t *testing.T) {
 		t.Fatal(werr)
 	}
 	finishes(t, "uniquePath", func() { _, err = uniquePath(file, "a", ".md") })
-	stopped("a path under a file")
+	// Windows says a path under a file does not exist, so the name reads as free
+	// and it is the write that refuses. Either way the search ends on its first try.
+	if runtime.GOOS != "windows" {
+		stopped("a path under a file")
+	}
 	finishes(t, "uniqueDir", func() { _, err = uniqueDir(dir, strings.Repeat("x", 300)) })
 	stopped("a folder name too long")
 	finishes(t, "uniqueTemplateSlug", func() { _, err = uniqueTemplateSlug(dir, strings.Repeat("x", 300), "") })
