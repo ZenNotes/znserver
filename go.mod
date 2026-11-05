@@ -27,6 +27,3 @@ require (
 	github.com/ZenNotes/tui v0.17.0
 	golang.org/x/sys v0.47.0 // indirect
 )
-
-// Local until tui is tagged. This cannot be released, and CI cannot build it.
-replace github.com/ZenNotes/tui => ../../zennotescli/.claude/worktrees/design-http-mcp-56-a234c1
