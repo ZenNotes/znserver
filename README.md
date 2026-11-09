@@ -143,8 +143,8 @@ later, and after 30 seconds on older versions. To opt out, set
 
 | Tag | Meaning |
 | --- | --- |
-| `2.83.1` | Exact release. Pin this in production. |
-| `2.83` | Latest patch of that minor. |
+| `2.84.0` | Exact release. Pin this in production. |
+| `2.84` | Latest patch of that minor. |
 | `latest` | Latest release. |
 
 ### Build the image yourself
@@ -175,7 +175,7 @@ binaries plus a `SHA256SUMS` file:
 **Linux**
 
 ```sh
-VERSION=2.83.1
+VERSION=2.84.0
 ARCH=amd64   # or arm64
 BASE="https://github.com/ZenNotes/znserver/releases/download/v${VERSION}"
 
@@ -190,7 +190,7 @@ sudo install -m 0755 "zennotes-server-linux-${ARCH}" /usr/local/bin/zennotes-ser
 **macOS**
 
 ```sh
-VERSION=2.83.1
+VERSION=2.84.0
 ARCH=arm64   # or amd64 on Intel Macs
 BASE="https://github.com/ZenNotes/znserver/releases/download/v${VERSION}"
 
@@ -209,7 +209,7 @@ flag with `xattr -d com.apple.quarantine <file>`.
 **Windows** (PowerShell)
 
 ```powershell
-$Version = "2.83.1"
+$Version = "2.84.0"
 $Base = "https://github.com/ZenNotes/znserver/releases/download/v$Version"
 Invoke-WebRequest "$Base/zennotes-server-windows-amd64.exe" -OutFile zennotes-server.exe
 Invoke-WebRequest "$Base/SHA256SUMS" -OutFile SHA256SUMS
@@ -459,7 +459,7 @@ server, so there is no second program to install or version to match.
 ```yaml
 services:
   zennotes:
-    image: adibhanna/zennotes:2.83
+    image: adibhanna/zennotes:2.84
     environment:
       - ZENNOTES_AUTH_TOKEN=${ZENNOTES_AUTH_TOKEN:?}
       - ZENNOTES_VAULT_PATH=/workspace
