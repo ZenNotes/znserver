@@ -1365,6 +1365,14 @@ func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	f, err := s.Static.Open(urlPath)
 	if err != nil {
+		// A /.well-known/ path is a question for this server, never an app route, so
+		// a miss is a real 404. Answering one with the app's page says "yes" in HTML:
+		// MCP clients probe the OAuth metadata URLs there, and a 200 they cannot parse
+		// keeps some of them retrying forever instead of using a plain token (#56).
+		if urlPath == ".well-known" || strings.HasPrefix(urlPath, ".well-known/") {
+			http.NotFound(w, r)
+			return
+		}
 		// SPA fallback: serve index.html for unknown paths.
 		s.serveIndexHTML(w)
 		return
