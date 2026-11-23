@@ -24,6 +24,6 @@ require (
 )
 
 require (
-	github.com/ZenNotes/tui v0.17.1
+	github.com/ZenNotes/tui v0.18.2
 	golang.org/x/sys v0.47.0 // indirect
 )
