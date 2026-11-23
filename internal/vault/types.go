@@ -388,6 +388,11 @@ type NoteMeta struct {
 	// only. The content belongs to whatever the link names, which may be a
 	// folder a scoped client (`zn mcp --allow-path`) must not reach.
 	Symlink bool `json:"symlink,omitempty"`
+	// Sha256 is the hex SHA-256 of the note's bytes on disk, on a note read
+	// and a note write only (listings leave it out: it would cost a hash of
+	// every note). A client sends it back as a write's baseSha256 to have the
+	// write refused when the note changed after it was read.
+	Sha256 string `json:"sha256,omitempty"`
 }
 
 // NoteContent extends NoteMeta with the raw body.

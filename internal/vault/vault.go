@@ -2,6 +2,7 @@ package vault
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1667,22 +1668,75 @@ func (v *Vault) ReadNote(rel string) (NoteContent, error) {
 	rel = filepath.ToSlash(rel)
 	title := strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
 	meta := buildNoteMeta(rel, title, folder, info, bodyStr, v.typstPreambleFolder())
+	meta.Sha256 = contentSha256(body)
 	return NoteContent{NoteMeta: meta, Body: bodyStr}, nil
 }
 
+// ErrNoteChanged refuses a conditional write: the note on disk is not the
+// version the client read (someone else saved it, or deleted it, since).
+var ErrNoteChanged = errors.New("note changed since it was read")
+
+// contentSha256 names a note's bytes exactly as they are on disk. Clients
+// never hash on their side; they echo what a read or a write returned, so the
+// value never depends on how JSON carried the body (a stray non-UTF-8 byte
+// reaches the client as U+FFFD, and a client-side hash of that would never
+// match the file).
+func contentSha256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// IsSha256Hex reports whether s is a hex SHA-256, in either case.
+func IsSha256Hex(s string) bool {
+	if len(s) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
 func (v *Vault) WriteNote(rel, body string) (NoteMeta, error) {
+	return v.WriteNoteIfUnchanged(rel, body, "")
+}
+
+// WriteNoteIfUnchanged writes the note only while its bytes on disk still
+// hash to baseSha256, checked under the same lock as the write, so nothing
+// can land between the check and the write. An empty baseSha256 writes
+// unconditionally, which is what every client before conditional writes
+// sends. A note that is gone counts as changed: it was there when the client
+// read it, and recreating it is the client's decision, made by writing again
+// without a base.
+func (v *Vault) WriteNoteIfUnchanged(rel, body, baseSha256 string) (NoteMeta, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	abs, err := SafeJoin(v.root, rel)
 	if err != nil {
 		return NoteMeta{}, err
 	}
-	if err := writeFileAtomic(abs, []byte(body), v.fileMode, v.dirMode); err != nil {
+	if baseSha256 != "" {
+		current, err := os.ReadFile(abs)
+		if errors.Is(err, os.ErrNotExist) {
+			return NoteMeta{}, fmt.Errorf("%w: %s is no longer on the server", ErrNoteChanged, filepath.ToSlash(rel))
+		}
+		if err != nil {
+			return NoteMeta{}, err
+		}
+		if !strings.EqualFold(contentSha256(current), baseSha256) {
+			return NoteMeta{}, fmt.Errorf("%w: %s", ErrNoteChanged, filepath.ToSlash(rel))
+		}
+	}
+	data := []byte(body)
+	if err := writeFileAtomic(abs, data, v.fileMode, v.dirMode); err != nil {
 		return NoteMeta{}, err
 	}
 	v.invalidateTextSearchCache()
 	folder, _ := v.folderOf(abs)
-	return v.readMeta(folder, abs)
+	meta, err := v.readMeta(folder, abs)
+	if err != nil {
+		return NoteMeta{}, err
+	}
+	meta.Sha256 = contentSha256(data)
+	return meta, nil
 }
 
 func newCommentID() string {

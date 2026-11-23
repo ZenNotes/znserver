@@ -347,6 +347,12 @@ curl -H "Authorization: Bearer $ZENNOTES_AUTH_TOKEN" -H "Content-Type: applicati
   -d '{"path":"inbox/Hello.md","body":"# Hello"}' http://localhost:7878/api/notes/write
 ```
 
+A read or write of a note answers with the `sha256` of its bytes. Send that
+back as `baseSha256` to make the next write conditional: if the note changed
+since (another device saved, or someone edited the file on disk) or is gone,
+the server answers 409 and leaves the file alone; read it again and decide.
+Without `baseSha256` a write always wins, as it always has.
+
 ## Configuration
 
 Settings come from environment variables. A few also live in the host config
