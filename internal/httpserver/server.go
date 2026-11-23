@@ -120,6 +120,13 @@ func (s *Server) switchVaultRoot(nextPath string) (*vault.Vault, error) {
 	// Non-fatal: a vault switch must not fail just because inotify is
 	// unavailable; fall back to a no-op watcher in that case. (#179)
 	nextWatcher := watcher.StartOrDisabled(nextVault.Root(), cfg.DisableWatcher)
+	// Seed the new watcher with this vault's folder layout, as startup does
+	// (main.go). Without it the watcher sorts events into the default system
+	// folder names until vault.json next changes, so a vault that remaps
+	// Trash or Inbox reports its notes in the wrong folder after a switch.
+	if settings, err := nextVault.GetSettings(); err == nil {
+		nextWatcher.SetFolderPaths(settings.SystemFolderPaths)
+	}
 
 	s.mu.Lock()
 	prevWatcher := s.Watcher
