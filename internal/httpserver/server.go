@@ -336,7 +336,7 @@ func writeError(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if errors.Is(err, vault.ErrWorkflowConflict) {
+	if errors.Is(err, vault.ErrWorkflowConflict) || errors.Is(err, vault.ErrNoteChanged) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
@@ -501,6 +501,12 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 		// a vault cannot tell a linked file from a real one, and so cannot
 		// trust a listed path to stay inside what it shows.
 		"supportsSymlinkMarks": true,
+		// A note read and a note write return the note's `sha256`, and a
+		// write that sends it back as `baseSha256` is refused with 409 when
+		// the note changed since (#1108). Absent on older servers, which
+		// ignore the field and write unconditionally, so a client that sends
+		// it there gets exactly what it got before.
+		"supportsConditionalNoteWrites": true,
 		// Says out loud that a missing file answers 404 rather than 500.
 		// Databases are composed from file reads where "absent" and "failed"
 		// mean opposite things (see remote-absence.ts), and a server that
@@ -783,12 +789,23 @@ func (s *Server) writeNote(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Path string `json:"path"`
 		Body string `json:"body"`
+		// The sha256 a read or a write of this note returned. Optional:
+		// without it the write is unconditional, as for every older client.
+		BaseSha256 string `json:"baseSha256"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeBodyError(w, err)
 		return
 	}
-	meta, err := s.currentVault().WriteNote(req.Path, req.Body)
+	base := strings.TrimSpace(req.BaseSha256)
+	// A base that is not a SHA-256 is a client bug. Refuse it rather than
+	// compare it (it could never match) or drop it (that would turn a write
+	// the client meant to be conditional into one that is not).
+	if base != "" && !vault.IsSha256Hex(base) {
+		http.Error(w, "baseSha256 must be a hex SHA-256", http.StatusBadRequest)
+		return
+	}
+	meta, err := s.currentVault().WriteNoteIfUnchanged(req.Path, req.Body, base)
 	if err != nil {
 		writeError(w, err)
 		return
