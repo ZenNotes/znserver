@@ -392,3 +392,73 @@ func TestWatcherWatchesDirectoriesCreatedWithTheirParent(t *testing.T) {
 		t.Fatalf("child directory created with its parent is not watched")
 	}
 }
+
+// Start must finish while the vault is changing under it. On Windows fsnotify
+// answers Add from the goroutine that sends events, and nothing read events
+// until the walk was done, so a write in a folder already watched stopped the
+// walk for good: a vault switch never answered (seen in CI on windows-latest).
+// The same held for the loop adding a new folder in the middle of a burst.
+func TestStartFinishesWhileTheVaultChanges(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 40; i++ {
+		if err := os.MkdirAll(filepath.Join(root, "inbox", "f"+string(rune('a'+i%26)), "n"+string(rune('a'+i/26))), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop := make(chan struct{})
+	churned := make(chan struct{})
+	go func() {
+		defer close(churned)
+		churn := filepath.Join(root, "churn.md")
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = os.WriteFile(churn, []byte{byte(i)}, 0o644)
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	defer func() {
+		close(stop)
+		<-churned
+	}()
+
+	started := make(chan *Watcher, 1)
+	go func() {
+		w, err := Start(root)
+		if err != nil {
+			t.Errorf("Start: %v", err)
+		}
+		started <- w
+	}()
+	var w *Watcher
+	select {
+	case w = <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start did not finish while a file in the vault kept changing")
+	}
+	if w == nil {
+		return
+	}
+	defer w.Close()
+	ch, unsub := w.Subscribe()
+	defer unsub()
+
+	// A folder made in the middle of the churn is watched and reported.
+	if err := os.MkdirAll(filepath.Join(root, "inbox", "Later"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Scope == "folder" && ev.Kind == "add" && ev.Path == "inbox/Later" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("no folder event for inbox/Later while the vault kept changing")
+		}
+	}
+}

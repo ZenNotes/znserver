@@ -38,6 +38,9 @@ type Watcher struct {
 	// folderPaths holds the systemFolderPaths from vault settings for
 	// classifying note paths to folder IDs.
 	folderPaths map[string]string
+	// events is what the loop reads: fsnotify's events, passed through the
+	// queue in pump so that fsnotify itself is never left waiting.
+	events chan fsnotify.Event
 }
 
 func (w *Watcher) SetFolderPaths(paths map[string]string) {
@@ -90,7 +93,10 @@ func Start(root string) (*Watcher, error) {
 		stopCh:      make(chan struct{}),
 		dirs:        map[string]struct{}{},
 		folderPaths: nil,
+		events:      make(chan fsnotify.Event),
 	}
+	// Drain fsnotify before the first Add, not after the walk: see pump.
+	go w.pump()
 	// Recursively add all existing directories under the vault.
 	var addErrs int
 	var firstAddErr error
@@ -209,16 +215,54 @@ func (w *Watcher) loop() {
 		select {
 		case <-w.stopCh:
 			return
-		case err, ok := <-w.fs.Errors:
+		case ev, ok := <-w.events:
 			if !ok {
 				return
+			}
+			w.handle(ev)
+		}
+	}
+}
+
+// pump keeps fsnotify's channels drained into a queue the loop reads from.
+// On Windows fsnotify sends events and answers Add from one goroutine, so an
+// event nobody reads blocks every Add after it. Start used to walk the vault,
+// adding each folder, before anything read events: a change in a folder
+// already added (the vault writing its own files as it opens) stopped the
+// walk for good, and a vault switch or a startup never finished. The loop had
+// the same trap when it added a new folder in the middle of a burst. Linux and
+// macOS answer Add on their own, so there the queue only moves the backlog.
+func (w *Watcher) pump() {
+	defer close(w.events)
+	var queue []fsnotify.Event
+	errs := w.fs.Errors
+	for {
+		var out chan fsnotify.Event
+		var next fsnotify.Event
+		if len(queue) > 0 {
+			out = w.events
+			next = queue[0]
+		}
+		select {
+		case <-w.stopCh:
+			return
+		case err, ok := <-errs:
+			if !ok {
+				errs = nil
+				continue
 			}
 			log.Printf("watcher error: %v", err)
 		case ev, ok := <-w.fs.Events:
 			if !ok {
 				return
 			}
-			w.handle(ev)
+			queue = append(queue, ev)
+		case out <- next:
+			queue[0] = fsnotify.Event{}
+			queue = queue[1:]
+			if len(queue) == 0 {
+				queue = nil
+			}
 		}
 	}
 }
