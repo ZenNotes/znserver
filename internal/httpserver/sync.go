@@ -20,16 +20,21 @@ import (
 //
 //	GET  /api/sync/manifest?page=&perPage=&include_content=
 //	GET  /api/sync/changes?after=&limit=
+//	GET  /api/sync/revision?item=&revision=   (supportsSync 2)
 //	POST /api/sync/mutations   {"mutations": [...]}
 //
-// Each takes an optional `vault_id`. A client sends the id its mirror was
+// Each takes a `vault_id`, optional for the manifest only. A client sends the id its mirror was
 // made from, and a server now serving another vault (a vault switch, or a
 // store that started over) answers 409 VAULT_MISMATCH instead of letting the
 // mirror sync into a vault it was never a copy of.
 
 // syncProtocolVersion is what /api/capabilities advertises as supportsSync. A
 // change a client must know about raises it.
-const syncProtocolVersion = 1
+//
+//	1  manifest, changes and mutations (server 2.91.1)
+//	2  adds revision reads, GET /api/sync/revision, which the engine uses for
+//	   a conflict's base text so edits to different lines merge on their own
+const syncProtocolVersion = 2
 
 // How often the maintenance loop reconciles a vault with a store, and how
 // long it waits after a watcher hint for the burst to finish.
@@ -56,6 +61,11 @@ func writeSyncError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusGone, syncErrorBody{
 			Code:    "CURSOR_EXPIRED",
 			Message: "This copy is older than the server's change history. It catches up from the full list instead.",
+		})
+	case errors.Is(err, vault.ErrSyncRevisionNotRetained):
+		writeJSON(w, http.StatusNotFound, syncErrorBody{
+			Code:    "REVISION_NOT_RETAINED",
+			Message: "The server no longer keeps this revision.",
 		})
 	case errors.Is(err, errSyncVaultMismatch):
 		writeJSON(w, http.StatusConflict, syncErrorBody{
@@ -182,6 +192,43 @@ func (s *Server) syncChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// syncRevision answers one revision of an item as {"data": CloudSyncRevision}.
+// A revision the store no longer has is 404 REVISION_NOT_RETAINED, never a
+// 500: the engine takes any error as "no base" and keeps the conflict two-way.
+func (s *Server) syncRevision(w http.ResponseWriter, r *http.Request) {
+	v, err := s.syncVault(r, true)
+	if err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	// item is this server's spelling; item_id is the field's own name.
+	itemID := strings.TrimSpace(r.URL.Query().Get("item"))
+	if itemID == "" {
+		itemID = strings.TrimSpace(r.URL.Query().Get("item_id"))
+	}
+	if itemID == "" {
+		writeSyncError(w, httpStatusError{code: http.StatusBadRequest, msg: "item is required"})
+		return
+	}
+	revision, ok, err := queryInt(r, "revision")
+	if err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	if !ok || revision < 1 {
+		writeSyncError(w, httpStatusError{code: http.StatusBadRequest, msg: "revision must be a positive whole number"})
+		return
+	}
+	out, err := v.SyncReadRevision(itemID, revision)
+	if err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Data vault.SyncRevision `json:"data"`
+	}{out})
 }
 
 func (s *Server) syncMutations(w http.ResponseWriter, r *http.Request) {

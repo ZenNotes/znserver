@@ -559,6 +559,9 @@ func TestSyncCursorExpiresWithTheLog(t *testing.T) {
 	if _, err := v.WriteNote("inbox/B.md", "b"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := v.WriteNote("inbox/A.md", "a, rewritten"); err != nil {
+		t.Fatal(err)
+	}
 	old := v.sync.seq
 	v = reopenSyncVault(t, v, Options{SyncLogRetention: time.Millisecond})
 	time.Sleep(5 * time.Millisecond)
@@ -574,17 +577,23 @@ func TestSyncCursorExpiresWithTheLog(t *testing.T) {
 	if _, err := v.SyncChanges(old+5, 100); !errors.Is(err, ErrSyncCursorExpired) {
 		t.Fatalf("a cursor past the head = %v", err)
 	}
-	// The manifest still has everything, and its blobs went with the log.
+	// The manifest still has everything. The blobs of superseded bytes went
+	// with the log; those of every item's current bytes stay, for revision
+	// reads.
 	page, err := v.SyncManifest(1, 250, true)
 	if err != nil || page.Cursor != old || len(page.Data) < 2 {
 		t.Fatalf("manifest = %+v, %v", page, err)
 	}
+	blobs := map[string]bool{}
 	entries, _ := os.ReadDir(filepath.Join(v.Root(), ".zennotes", "sync", "blobs"))
 	for _, dir := range entries {
 		files, _ := os.ReadDir(filepath.Join(v.Root(), ".zennotes", "sync", "blobs", dir.Name()))
-		if len(files) != 0 {
-			t.Fatalf("blobs no record names are pruned: %s has %d", dir.Name(), len(files))
+		for _, file := range files {
+			blobs[strings.TrimSuffix(file.Name(), ".gz")] = true
 		}
+	}
+	if blobs[contentSha256([]byte("a"))] || !blobs[contentSha256([]byte("a, rewritten"))] || !blobs[contentSha256([]byte("b"))] {
+		t.Fatalf("blobs after the prune = %v", blobs)
 	}
 	// A restart after the prune keeps the floor.
 	again := reopenSyncVault(t, v, Options{})
@@ -762,5 +771,170 @@ func TestSyncPathRulesMatchTheEngine(t *testing.T) {
 	}
 	if got, _ := normalizeSyncPath("Café.md"); got != "Café.md" {
 		t.Errorf("NFC: %q", got)
+	}
+}
+
+// Revision reads (supportsSync 2): what the engine fetches as a conflict's
+// base. Every revision the log or the index can still describe answers, a
+// file the store started with included, after the file has changed.
+func TestSyncRevisionReads(t *testing.T) {
+	v, err := New(t.TempDir(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRaw(t, v, "inbox/Base.md", "# Base\n\none\ntwo\n")
+	if _, err := v.SyncVaultID(); err != nil {
+		t.Fatal(err)
+	}
+	item := syncItemAt(t, v, "inbox/Base.md")
+	if item.Revision != 1 {
+		t.Fatalf("a file the store starts with is revision 1: %+v", item)
+	}
+	want := func(revision int64, path, body string) {
+		t.Helper()
+		got, err := v.SyncReadRevision(item.ItemID, revision)
+		if err != nil {
+			t.Fatalf("revision %d: %v", revision, err)
+		}
+		if got.ItemID != item.ItemID || got.Revision != revision || got.Path != path || got.Kind != "text" || got.Deleted ||
+			got.Content == nil || got.Content.Encoding != "utf8" || got.Content.Data != body ||
+			got.Content.Sha256 != contentSha256([]byte(body)) || got.Content.ByteLength != int64(len(body)) ||
+			got.Content.MediaType != "text/markdown" {
+			t.Fatalf("revision %d = %+v (content %+v)", revision, got, got.Content)
+		}
+	}
+	want(1, "inbox/Base.md", "# Base\n\none\ntwo\n")
+
+	// An edit in a shell: revision 2. Revision 1 is gone from the disk and
+	// still answers, from the blob the store kept when it started.
+	writeRaw(t, v, "inbox/Base.md", "# Base\n\none (edited)\ntwo\n")
+	if err := v.SyncReconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want(1, "inbox/Base.md", "# Base\n\none\ntwo\n")
+	want(2, "inbox/Base.md", "# Base\n\none (edited)\ntwo\n")
+
+	// A move (revision 3) answers its new path with the bytes it carried.
+	result, err := v.SyncMutate([]SyncMutation{{OperationID: "mv", ItemID: item.ItemID, BaseRevision: rev(2), Type: "move", Path: "inbox/Moved.md"}})
+	if err != nil || len(result.Acknowledged) != 1 {
+		t.Fatalf("move = %+v, %v", result, err)
+	}
+	want(3, "inbox/Moved.md", "# Base\n\none (edited)\ntwo\n")
+	want(2, "inbox/Base.md", "# Base\n\none (edited)\ntwo\n")
+
+	// A delete (revision 4) answers deleted, with no content.
+	result, err = v.SyncMutate([]SyncMutation{{OperationID: "rm", ItemID: item.ItemID, BaseRevision: rev(3), Type: "delete"}})
+	if err != nil || len(result.Acknowledged) != 1 {
+		t.Fatalf("delete = %+v, %v", result, err)
+	}
+	got, err := v.SyncReadRevision(item.ItemID, 4)
+	if err != nil || !got.Deleted || got.Content != nil || got.Path != "inbox/Moved.md" || got.Revision != 4 {
+		t.Fatalf("the delete = %+v, %v", got, err)
+	}
+	want(3, "inbox/Moved.md", "# Base\n\none (edited)\ntwo\n")
+
+	for _, c := range []struct {
+		id       string
+		revision int64
+	}{{item.ItemID, 5}, {item.ItemID, 0}, {item.ItemID, -1}, {"no-such-item", 1}, {"", 1}} {
+		if _, err := v.SyncReadRevision(c.id, c.revision); !errors.Is(err, ErrSyncRevisionNotRetained) {
+			t.Fatalf("%q revision %d = %v", c.id, c.revision, err)
+		}
+	}
+
+	// A move recorded before moves named their bytes still answers, from
+	// the upsert before it.
+	v.mu.Lock()
+	for i := range v.sync.changes {
+		if v.sync.changes[i].Type == "move" {
+			v.sync.changes[i].Sha256, v.sync.changes[i].MediaType = "", ""
+		}
+	}
+	v.mu.Unlock()
+	want(3, "inbox/Moved.md", "# Base\n\none (edited)\ntwo\n")
+}
+
+// A revision whose bytes are gone (a store copied without its blobs, or a
+// blob removed by hand) answers not retained, never wrong bytes, unless the
+// file still holds exactly those bytes.
+func TestSyncRevisionWithoutItsBlob(t *testing.T) {
+	v := newSyncVault(t)
+	if _, err := v.WriteNote("inbox/Note.md", "first"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.WriteNote("inbox/Note.md", "second"); err != nil {
+		t.Fatal(err)
+	}
+	item := syncItemAt(t, v, "inbox/Note.md")
+	if err := os.RemoveAll(filepath.Join(v.Root(), ".zennotes", "sync", "blobs")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.SyncReadRevision(item.ItemID, item.Revision-1); !errors.Is(err, ErrSyncRevisionNotRetained) {
+		t.Fatalf("a revision with no bytes left = %v", err)
+	}
+	got, err := v.SyncReadRevision(item.ItemID, item.Revision)
+	if err != nil || got.Content == nil || got.Content.Data != "second" {
+		t.Fatalf("the current revision reads the file = %+v, %v", got, err)
+	}
+}
+
+// A store from before current versions had blobs (server 2.91.1) fills them
+// in at its first full reconcile, so revision 1 of a file it started with
+// answers after that file changes.
+func TestSyncRevisionBackfillsCurrentBlobs(t *testing.T) {
+	v, err := New(t.TempDir(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRaw(t, v, "inbox/Old.md", "from before the upgrade")
+	if _, err := v.SyncVaultID(); err != nil {
+		t.Fatal(err)
+	}
+	item := syncItemAt(t, v, "inbox/Old.md")
+	blobs := filepath.Join(v.Root(), ".zennotes", "sync", "blobs")
+	if err := os.RemoveAll(blobs); err != nil {
+		t.Fatal(err)
+	}
+	v = reopenSyncVault(t, v, Options{})
+	if err := v.SyncReconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(blobs, item.Sha256[:2], item.Sha256+".gz")); err != nil {
+		t.Fatalf("the current version has a blob again: %v", err)
+	}
+	writeRaw(t, v, "inbox/Old.md", "edited after the upgrade")
+	if err := v.SyncReconcile(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := v.SyncReadRevision(item.ItemID, 1)
+	if err != nil || got.Content == nil || got.Content.Data != "from before the upgrade" {
+		t.Fatalf("revision 1 = %+v, %v", got, err)
+	}
+}
+
+// The retention window bounds revision reads as it bounds the change feed: a
+// pruned revision answers not retained, the current one still answers.
+func TestSyncRevisionAfterThePrune(t *testing.T) {
+	v := newSyncVault(t)
+	if _, err := v.WriteNote("inbox/Note.md", "old"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.WriteNote("inbox/Note.md", "current"); err != nil {
+		t.Fatal(err)
+	}
+	item := syncItemAt(t, v, "inbox/Note.md")
+	v = reopenSyncVault(t, v, Options{SyncLogRetention: time.Millisecond})
+	time.Sleep(5 * time.Millisecond)
+	if err := v.SyncPrune(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.SyncReadRevision(item.ItemID, item.Revision-1); !errors.Is(err, ErrSyncRevisionNotRetained) {
+		t.Fatalf("a pruned revision = %v", err)
+	}
+	// The file changes and the blob is what is left of the current bytes.
+	writeRaw(t, v, "inbox/Note.md", "changed, not yet reconciled")
+	got, err := v.SyncReadRevision(item.ItemID, item.Revision)
+	if err != nil || got.Content == nil || got.Content.Data != "current" {
+		t.Fatalf("the current revision after the prune = %+v, %v", got, err)
 	}
 }

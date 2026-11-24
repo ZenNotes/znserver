@@ -1,4 +1,4 @@
-// ZenNotes Cloud's sync engine against a real znserver (#1108, phase 2).
+// ZenNotes Cloud's sync engine against a real znserver (#1108, phases 2 and 4).
 //
 // Two "devices" keep mirrors of one server vault with CloudSyncCoordinator and
 // DesktopCloudSyncRepository, the exact code a desktop offline copy will run
@@ -159,13 +159,14 @@ function withoutHints(mutation: CloudSyncMutation): CloudSyncMutation {
 
 interface Seen {
   cursorExpired: number
+  revisions: number
 }
 
 function remoteFor(server: TestServer, seen: Seen): CloudSyncRemote {
   return {
-    // No revision reads before phase 4, so every manifest carries content:
-    // the engine hydrates items from the manifest when it cannot ask for a
-    // revision.
+    // The manifest always carries content (the server sends it whatever
+    // include_content says), so the engine never needs a revision read to
+    // hydrate an item; it reads revisions for a conflict's base text.
     manifest: (vaultId, options) =>
       server.json('GET', `/api/sync/manifest${query({ vault_id: vaultId, page: options.page, perPage: options.perPage, include_content: 1 })}`),
     changes: async (vaultId, after, limit) => {
@@ -175,6 +176,12 @@ function remoteFor(server: TestServer, seen: Seen): CloudSyncRemote {
         if (error instanceof ServerRequestError && error.code === 'CURSOR_EXPIRED') seen.cursorExpired++
         throw error
       }
+    },
+    // supportsSync 2. Any error (404 REVISION_NOT_RETAINED included) leaves
+    // the conflict two-way, held for review.
+    revision: (vaultId, itemId, revision) => {
+      seen.revisions++
+      return server.json('GET', `/api/sync/revision${query({ vault_id: vaultId, item: itemId, revision })}`)
     },
     mutate: (vaultId, body: CloudSyncMutationRequest) =>
       server.json('POST', `/api/sync/mutations${query({ vault_id: vaultId })}`, { mutations: body.mutations.map(withoutHints) })
@@ -191,7 +198,7 @@ interface Device {
 async function makeDevice(base: string, name: string, server: TestServer, vaultId: string): Promise<Device> {
   const root = path.join(base, name, 'vault')
   await fs.mkdir(root, { recursive: true })
-  const seen = { cursorExpired: 0 }
+  const seen = { cursorExpired: 0, revisions: 0 }
   const coordinator = createDesktopCloudSyncCoordinator({
     root,
     stateDirectory: path.join(base, name, 'state'),
@@ -264,6 +271,7 @@ test('Cloud sync engine keeps mirrors of a znserver vault', { timeout: 240_000 }
   await write(serverRoot, 'inbox/Linker.md', 'Links to [[Source]].\n')
   await write(serverRoot, 'inbox/Projects/Plan.md', '# Plan\n\n- [ ] ship\n')
   await write(serverRoot, 'inbox/Doomed.md', '# Deleted offline\n')
+  await write(serverRoot, 'inbox/Shared.md', '# Shared\n\nfirst line\nsecond line\nthird line\n')
   await write(serverRoot, 'assets/photo.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3, 0xff]))
 
   await server.start()
@@ -326,8 +334,9 @@ test('Cloud sync engine keeps mirrors of a znserver vault', { timeout: 240_000 }
     })
 
     await t.test('a conflict is held for review, never written over', async () => {
+      // The same line on both sides: no merge can settle it.
       await write(a.root, 'inbox/Alpha.md', '# Alpha\n\nline one (A)\nline two\nline three\nline four (offline)\n')
-      await write(b.root, 'inbox/Alpha.md', '# Alpha\n\nline one\nline two\nline three (B)\nline four (offline)\n')
+      await write(b.root, 'inbox/Alpha.md', '# Alpha\n\nline one (B)\nline two\nline three\nline four (offline)\n')
       const fromA = await a.coordinator.sync()
       assert.equal(fromA.pushed, 1)
       const fromB = await b.coordinator.sync()
@@ -335,12 +344,12 @@ test('Cloud sync engine keeps mirrors of a znserver vault', { timeout: 240_000 }
       assert.ok(pending, `B holds the conflict: ${JSON.stringify(fromB)}`)
       assert.equal(await read(serverRoot, 'inbox/Alpha.md'), '# Alpha\n\nline one (A)\nline two\nline three\nline four (offline)\n',
         'the server keeps the version that got there first')
-      assert.equal(await read(b.root, 'inbox/Alpha.md'), '# Alpha\n\nline one\nline two\nline three (B)\nline four (offline)\n',
+      assert.equal(await read(b.root, 'inbox/Alpha.md'), '# Alpha\n\nline one (B)\nline two\nline three\nline four (offline)\n',
         "B's edit stays on B")
 
       const details = await b.coordinator.getConflict(pending.id)
       assert.match(details.cloud.text ?? '', /line one \(A\)/)
-      const merged = '# Alpha\n\nline one (A)\nline two\nline three (B)\nline four (offline)\n'
+      const merged = '# Alpha\n\nline one (A and B)\nline two\nline three\nline four (offline)\n'
       await b.coordinator.resolveConflict({
         conflict_id: pending.id,
         choice: 'merged',
@@ -352,6 +361,30 @@ test('Cloud sync engine keeps mirrors of a znserver vault', { timeout: 240_000 }
       assert.equal(await read(b.root, 'inbox/Alpha.md'), merged)
       await a.coordinator.sync()
       assert.equal(await read(a.root, 'inbox/Alpha.md'), merged)
+    })
+
+    await t.test('edits to different lines of one note merge on their own', async () => {
+      // Shared.md is revision 1 of a file the store started with, so its base
+      // is read back after the server's edit has replaced it on disk.
+      await a.coordinator.sync()
+      await b.coordinator.sync()
+      const before = a.seen.revisions
+      const serverEdit = '# Shared\n\nfirst line (server)\nsecond line\nthird line\n'
+      const localEdit = '# Shared\n\nfirst line\nsecond line\nthird line (A)\n'
+      const merged = '# Shared\n\nfirst line (server)\nsecond line\nthird line (A)\n'
+      await server.json('POST', '/api/notes/write', { path: 'inbox/Shared.md', body: serverEdit })
+      await write(a.root, 'inbox/Shared.md', localEdit)
+
+      const result = await a.coordinator.sync()
+      assert.ok(a.seen.revisions > before, 'the engine read the base revision')
+      assert.equal(result.conflicts.length + result.pendingConflicts.length + result.localConflicts.length, 0, JSON.stringify(result))
+      assert.equal(await read(a.root, 'inbox/Shared.md'), merged, 'the mirror has both edits')
+      assert.equal(await read(serverRoot, 'inbox/Shared.md'), merged, 'the server has both edits')
+      const again = await a.coordinator.sync()
+      assert.equal(again.pendingConflicts.length, 0)
+      assert.equal(again.pushed, 0, 'nothing left to send')
+      await b.coordinator.sync()
+      assert.equal(await read(b.root, 'inbox/Shared.md'), merged)
     })
 
     await t.test('a rename on the server arrives as a move, links rewritten', async () => {

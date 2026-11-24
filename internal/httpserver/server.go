@@ -294,6 +294,7 @@ func (s *Server) registerProtectedRoutes(r chi.Router) {
 
 	r.Get("/sync/manifest", s.syncManifest)
 	r.Get("/sync/changes", s.syncChanges)
+	r.Get("/sync/revision", s.syncRevision)
 	r.Post("/sync/mutations", s.syncMutations)
 }
 
@@ -530,9 +531,10 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 		"supportsConditionalNoteWrites": true,
 		// The offline copy's sync protocol (#1108): /api/sync/manifest,
 		// /api/sync/changes and /api/sync/mutations, the subset of ZenNotes
-		// Cloud's sync API its engine needs to keep a mirror of this vault.
-		// A number, the protocol's version, so a later change can raise it;
-		// absent on servers without it.
+		// Cloud's sync API its engine needs to keep a mirror of this vault,
+		// and from 2 /api/sync/revision. A number, the protocol's version
+		// (see syncProtocolVersion), so a later change can raise it; absent
+		// on servers without it.
 		"supportsSync": syncProtocolVersion,
 		// Says out loud that a missing file answers 404 rather than 500.
 		// Databases are composed from file reads where "absent" and "failed"

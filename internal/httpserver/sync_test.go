@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -77,11 +78,11 @@ func newSyncTestServer(t *testing.T) (syncClient, *vault.Vault) {
 func TestSyncCapabilityAndAuth(t *testing.T) {
 	client, _ := newSyncTestServer(t)
 	status, caps := client.do(http.MethodGet, "/api/capabilities", nil)
-	if status != http.StatusOK || caps["supportsSync"] != float64(syncProtocolVersion) {
+	if status != http.StatusOK || caps["supportsSync"] != float64(syncProtocolVersion) || syncProtocolVersion != 2 {
 		t.Fatalf("capabilities = %d %v", status, caps)
 	}
 	anonymous := syncClient{t: t, server: client.server}
-	for _, path := range []string{"/api/sync/manifest", "/api/sync/changes?after=0"} {
+	for _, path := range []string{"/api/sync/manifest", "/api/sync/changes?after=0", "/api/sync/revision?item=x&revision=1"} {
 		if status, _ := anonymous.do(http.MethodGet, path, nil); status != http.StatusUnauthorized {
 			t.Fatalf("%s without the token = %d", path, status)
 		}
@@ -259,4 +260,125 @@ func TestSyncFollowsAVaultSwitch(t *testing.T) {
 	if after["vault_id"] == oldID {
 		t.Fatal("the new vault has its own id")
 	}
+}
+
+// GET /api/sync/revision (supportsSync 2): the conflict base the engine asks
+// for, in Cloud's {"data": CloudSyncRevision} shape, and the errors it takes
+// as "no base".
+func TestSyncRevisionOverHTTP(t *testing.T) {
+	client, v := newSyncTestServer(t)
+	if _, err := v.WriteNote("inbox/Merge.md", "# Merge\n\none\ntwo\n"); err != nil {
+		t.Fatal(err)
+	}
+	_, manifest := client.do(http.MethodGet, "/api/sync/manifest", nil)
+	vaultID := manifest["vault_id"].(string)
+	var itemID string
+	var revision float64
+	for _, raw := range manifest["data"].([]any) {
+		item := raw.(map[string]any)
+		if item["path"] == "inbox/Merge.md" {
+			itemID, revision = item["item_id"].(string), item["revision"].(float64)
+		}
+	}
+	if itemID == "" {
+		t.Fatalf("manifest = %v", manifest)
+	}
+	route := func(item string, n float64) string {
+		return fmt.Sprintf("/api/sync/revision?vault_id=%s&item=%s&revision=%d", vaultID, item, int64(n))
+	}
+	wantData := func(n float64, path, body string) map[string]any {
+		t.Helper()
+		status, out := client.do(http.MethodGet, route(itemID, n), nil)
+		data, _ := out["data"].(map[string]any)
+		content, _ := data["content"].(map[string]any)
+		want := textContent(body)
+		if status != http.StatusOK || data["item_id"] != itemID || data["revision"] != n || data["path"] != path ||
+			data["kind"] != "text" || data["deleted"] != false || content["encoding"] != "utf8" || content["data"] != body ||
+			content["sha256"] != want["sha256"] || content["byte_length"] != float64(len(body)) || content["media_type"] != "text/markdown" {
+			t.Fatalf("revision %v = %d %v", n, status, out)
+		}
+		return data
+	}
+
+	// The base survives the edit that replaces it.
+	if _, err := v.WriteNote("inbox/Merge.md", "# Merge\n\none (web)\ntwo\n"); err != nil {
+		t.Fatal(err)
+	}
+	wantData(revision, "inbox/Merge.md", "# Merge\n\none\ntwo\n")
+	wantData(revision+1, "inbox/Merge.md", "# Merge\n\none (web)\ntwo\n")
+
+	// After a move the revision has the new path and the bytes it carried.
+	if _, err := v.RenameNote("inbox/Merge.md", "Moved"); err != nil {
+		t.Fatal(err)
+	}
+	wantData(revision+2, "inbox/Moved.md", "# Merge\n\none (web)\ntwo\n")
+
+	// A delete revision: deleted, no content.
+	status, result := client.do(http.MethodPost, "/api/sync/mutations?vault_id="+vaultID, map[string]any{"mutations": []any{
+		map[string]any{"operation_id": "rm", "item_id": itemID, "base_revision": revision + 2, "type": "delete"},
+	}})
+	if acks, _ := result["acknowledged"].([]any); status != http.StatusOK || len(acks) != 1 {
+		t.Fatalf("delete = %d %v", status, result)
+	}
+	status, out := client.do(http.MethodGet, route(itemID, revision+3), nil)
+	data, _ := out["data"].(map[string]any)
+	if _, hasContent := data["content"]; status != http.StatusOK || data["deleted"] != true || hasContent || data["path"] != "inbox/Moved.md" {
+		t.Fatalf("delete revision = %d %v", status, out)
+	}
+
+	// Not retained: 404 REVISION_NOT_RETAINED, never a 500.
+	for _, path := range []string{route(itemID, revision+4), route("no-such-item", 1)} {
+		if status, body := client.do(http.MethodGet, path, nil); status != http.StatusNotFound || body["code"] != "REVISION_NOT_RETAINED" {
+			t.Fatalf("%s = %d %v", path, status, body)
+		}
+	}
+	// A pruned revision.
+	pruned := reopenForPrune(t, client, v)
+	if status, body := pruned.do(http.MethodGet, route(itemID, revision), nil); status != http.StatusNotFound || body["code"] != "REVISION_NOT_RETAINED" {
+		t.Fatalf("pruned revision = %d %v", status, body)
+	}
+
+	// The request must name the vault, the item and a revision.
+	for _, path := range []string{
+		fmt.Sprintf("/api/sync/revision?item=%s&revision=1", itemID),
+		fmt.Sprintf("/api/sync/revision?vault_id=%s&revision=1", vaultID),
+		fmt.Sprintf("/api/sync/revision?vault_id=%s&item=%s", vaultID, itemID),
+		fmt.Sprintf("/api/sync/revision?vault_id=%s&item=%s&revision=0", vaultID, itemID),
+		fmt.Sprintf("/api/sync/revision?vault_id=%s&item=%s&revision=two", vaultID, itemID),
+	} {
+		if status, _ := client.do(http.MethodGet, path, nil); status != http.StatusBadRequest {
+			t.Fatalf("%s = %d", path, status)
+		}
+	}
+	status, body := client.do(http.MethodGet, fmt.Sprintf("/api/sync/revision?vault_id=someone-else&item=%s&revision=1", itemID), nil)
+	if status != http.StatusConflict || body["code"] != "VAULT_MISMATCH" {
+		t.Fatalf("other vault = %d %v", status, body)
+	}
+	if status, _ := (syncClient{t: t, server: client.server}).do(http.MethodGet, route(itemID, 1), nil); status != http.StatusUnauthorized {
+		t.Fatalf("without the token = %d", status)
+	}
+}
+
+// reopenForPrune serves the same vault again with a retention window short
+// enough that a prune drops every record.
+func reopenForPrune(t *testing.T, client syncClient, v *vault.Vault) syncClient {
+	t.Helper()
+	root := v.Root()
+	v.Close()
+	next, err := vault.New(root, vault.Options{SyncLogRetention: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := next.SyncPrune(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(next, nil, nil, config.Config{
+		VaultPath: root, DefaultVaultPath: root, Bind: "127.0.0.1:7878",
+		AuthToken: client.token, BrowseRoots: []string{root},
+	})
+	server := httptest.NewServer(s.Router())
+	t.Cleanup(server.Close)
+	t.Cleanup(next.Close)
+	return syncClient{t: t, server: server, token: client.token}
 }
