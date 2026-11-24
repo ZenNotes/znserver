@@ -37,6 +37,43 @@ jobs:
         working-directory: ${{ runner.temp }}/tui
         env:
           ZENNOTES_SERVER_MCP_CONTRACT_BINARY: ${{ runner.temp }}/zennotes-server
+  # ZenNotes Cloud's own sync engine against this server (#1108): the
+  # CloudSyncCoordinator and desktop repository from the ZenNotes commit in
+  # testdata/zennotes-ref keep mirrors of a real server's vault. The test only
+  # skips when ZENNOTES_SRC is unset, so nothing here can skip.
+  sync-engine:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.26.x
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Fetch the pinned sync engine from ZenNotes/zennotes
+        run: |
+          ref="$(tr -d '[:space:]' < integration/cloud-engine/testdata/zennotes-ref)"
+          git init -q "$RUNNER_TEMP/zennotes"
+          git -C "$RUNNER_TEMP/zennotes" remote add origin https://github.com/ZenNotes/zennotes.git
+          # Cone-mode paths, never a leading slash: Git Bash on Windows rewrites
+          # an argument starting with / into a Windows path, and the checkout
+          # comes out empty.
+          git -C "$RUNNER_TEMP/zennotes" sparse-checkout set packages/shared-domain/src packages/bridge-contract/src apps/desktop/src/main
+          git -C "$RUNNER_TEMP/zennotes" fetch -q --depth 1 --filter=blob:none origin "$ref"
+          git -C "$RUNNER_TEMP/zennotes" checkout -q FETCH_HEAD
+      - run: npm ci --no-audit --no-fund
+        working-directory: integration/cloud-engine/testdata
+      - run: go test -count=1 -v ./integration/cloud-engine
+        env:
+          ZENNOTES_SRC: ${{ runner.temp }}/zennotes
   docker:
     runs-on: ubuntu-latest
     steps:

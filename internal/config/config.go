@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -52,6 +53,12 @@ type Config struct {
 	TrustedProxies  []net.IPNet `json:"-"`
 	VaultFileMode   fs.FileMode `json:"-"`
 	VaultDirMode    fs.FileMode `json:"-"`
+
+	// SyncLogRetention is how long the sync protocol's change log keeps a
+	// change (ZENNOTES_SYNC_LOG_RETENTION, a Go duration such as 2160h; 90
+	// days by default). A copy offline for longer catches up from the full
+	// list instead of the log.
+	SyncLogRetention time.Duration `json:"-"`
 
 	// AllowedHosts are Host names a loopback bind with no auth token answers to
 	// besides localhost and IP addresses (ZENNOTES_ALLOWED_HOSTS), such as the
@@ -138,6 +145,13 @@ func Load() Config {
 	cfg.AllowInsecureNoAuth = envEnabled("ZENNOTES_ALLOW_INSECURE_NOAUTH")
 	cfg.DevMode = envEnabled("ZENNOTES_DEV")
 	cfg.DisableWatcher = envEnabled("ZENNOTES_DISABLE_WATCHER")
+	if raw := strings.TrimSpace(os.Getenv("ZENNOTES_SYNC_LOG_RETENTION")); raw != "" {
+		if value, err := time.ParseDuration(raw); err == nil && value > 0 {
+			cfg.SyncLogRetention = value
+		} else {
+			log.Printf("config: ZENNOTES_SYNC_LOG_RETENTION=%q is not a positive duration (such as 2160h); keeping 90 days", raw)
+		}
+	}
 	cfg.BehindTLS = envEnabled("ZENNOTES_BEHIND_TLS")
 	cfg.PersistSessions = envEnabled("ZENNOTES_PERSIST_SESSIONS")
 	cfg.TrustedProxies = parseCIDRListEnv("ZENNOTES_TRUSTED_PROXIES")

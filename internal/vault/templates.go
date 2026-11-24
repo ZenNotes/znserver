@@ -199,6 +199,7 @@ func (v *Vault) WriteTemplate(input WriteTemplateInput) (CustomTemplateFile, err
 	if err := writeFileAtomic(abs, []byte(input.Raw), v.fileMode, v.dirMode); err != nil {
 		return CustomTemplateFile{}, err
 	}
+	defer v.syncReplaced(previous, abs)
 	if previous != "" && previous != abs {
 		// On a case-insensitive filesystem two differently-cased paths can name
 		// the SAME file, and writeFileAtomic just landed the new content on it;
@@ -231,5 +232,6 @@ func (v *Vault) DeleteTemplate(sourcePath string) error {
 	if err := os.Remove(abs); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	v.syncTouched(abs)
 	return nil
 }

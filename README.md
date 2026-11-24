@@ -353,6 +353,18 @@ since (another device saved, or someone edited the file on disk) or is gone,
 the server answers 409 and leaves the file alone; read it again and decide.
 Without `baseSha256` a write always wins, as it always has.
 
+**Offline copies.** `/api/sync/manifest`, `/api/sync/changes` and
+`/api/sync/mutations` (advertised as `supportsSync` in `/api/capabilities`) let
+a client keep a copy of the vault that works while the server is away and
+catches up when it is back. They carry notes and other text files; attachments
+are not part of a copy yet. What the server needs for that lives in the vault
+at `.zennotes/sync/`: an id for the vault, a revision for each file, and a log
+of changes with their text, kept for 90 days. It is created the first time a
+copy connects, moves with the vault, and keeps itself out of Git with its own
+`.gitignore`. Edits made outside the server (a shell, `git pull`, Syncthing)
+are picked up within seconds and are never written over. Deleting
+`.zennotes/sync/` is safe: copies notice and download the vault again.
+
 ## Configuration
 
 Settings come from environment variables. A few also live in the host config
@@ -398,6 +410,7 @@ the token from the UI. Environment variables win over the file.
 | --- | --- | --- |
 | `ZENNOTES_DEFAULT_VAULT_PATH` | none | Vault used when neither the env var nor the config file names one. The Docker image sets it to `/workspace`. |
 | `ZENNOTES_DISABLE_WATCHER` | off | Turn off the inotify watcher. Live refresh stops but the vault is fully served. Use on unprivileged LXC hosts where inotify wedges. |
+| `ZENNOTES_SYNC_LOG_RETENTION` | `2160h` (90 days) | How long the offline-copy change log keeps a change, as a duration such as `720h`. A copy away longer downloads the vault again instead of catching up. |
 | `ZENNOTES_DEV` | off | Accept any loopback browser origin, such as a Vite dev server, with the session cookie. For development only: every page served from this machine gets the same access. |
 
 ### MCP

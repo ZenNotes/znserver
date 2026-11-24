@@ -42,11 +42,7 @@ func main() {
 	logStartupBanner(cfg)
 	logMCPBanner(cfg, mcpCfg)
 
-	v, err := vault.New(cfg.VaultPath, vault.Options{
-		FileMode:      cfg.VaultFileMode,
-		DirMode:       cfg.VaultDirMode,
-		MaxAssetBytes: cfg.MaxAssetBytes,
-	})
+	v, err := vault.New(cfg.VaultPath, httpserver.VaultOptions(cfg))
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
 			logVaultPermissionHelp(cfg.VaultPath, err)
@@ -84,6 +80,9 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	// Offline copies (#1108): record edits made outside the server.
+	srv.StartSyncMaintenance(ctx)
+	defer srv.StopSyncMaintenance()
 
 	go func() {
 		log.Printf("listening on http://%s", cfg.Bind)

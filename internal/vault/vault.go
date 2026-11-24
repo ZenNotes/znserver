@@ -205,6 +205,11 @@ type Vault struct {
 	// vault directory. Windows refuses to delete a directory a writer is
 	// still creating files in.
 	pending sync.WaitGroup
+	// sync is the offline-copy protocol's store (.zennotes/sync/), nil until
+	// a client first uses the protocol. Guarded by mu, like the files.
+	sync          *syncStore
+	maxSyncText   int64
+	syncRetention time.Duration
 }
 
 // Close waits for background writers such as the delayed note-meta cache
@@ -227,6 +232,12 @@ type Options struct {
 	FileMode      fs.FileMode
 	DirMode       fs.FileMode
 	MaxAssetBytes int64
+	// MaxNoteBytes is the largest text file the sync protocol carries, the
+	// same limit a note write has (10 MiB when zero).
+	MaxNoteBytes int64
+	// SyncLogRetention is how long the sync change log keeps a change (90
+	// days when zero).
+	SyncLogRetention time.Duration
 }
 
 type textSearchFile struct {
@@ -305,6 +316,12 @@ func New(root string, opts Options) (*Vault, error) {
 	if opts.MaxAssetBytes <= 0 {
 		opts.MaxAssetBytes = 50 << 20
 	}
+	if opts.MaxNoteBytes <= 0 {
+		opts.MaxNoteBytes = 10 << 20
+	}
+	if opts.SyncLogRetention <= 0 {
+		opts.SyncLogRetention = DefaultSyncLogRetention
+	}
 	if err := os.MkdirAll(abs, opts.DirMode); err != nil {
 		return nil, err
 	}
@@ -314,10 +331,13 @@ func New(root string, opts Options) (*Vault, error) {
 		dirMode:       opts.DirMode,
 		maxAssetBytes: opts.MaxAssetBytes,
 		metaCache:     map[string]noteMetaCacheEntry{},
+		maxSyncText:   opts.MaxNoteBytes,
+		syncRetention: opts.SyncLogRetention,
 	}
 	if err := v.EnsureLayout(); err != nil {
 		return nil, err
 	}
+	v.syncOpen()
 	return v, nil
 }
 
@@ -995,7 +1015,16 @@ func (v *Vault) invalidateSettingsCache() {
 	v.settingsCache = nil
 }
 
+// SetSettings writes vault.json under the vault lock, so the sync store records
+// it like any other write.
 func (v *Vault) SetSettings(next VaultSettings) (VaultSettings, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.setSettingsLocked(next)
+}
+
+// setSettingsLocked is SetSettings for a caller that already holds v.mu.
+func (v *Vault) setSettingsLocked(next VaultSettings) (VaultSettings, error) {
 	fallbackPrimary := v.inferPrimaryNotesLocation()
 	normalized := normalizeVaultSettings(next, fallbackPrimary)
 	// Read before the write, while the cache still answers with the old value:
@@ -1014,6 +1043,7 @@ func (v *Vault) SetSettings(next VaultSettings) (VaultSettings, error) {
 	}
 	// The next read re-parses rather than trusting a same-tick mtime.
 	v.invalidateSettingsCache()
+	v.syncTouched(v.settingsPath())
 	if normalized.PrimaryNotesLocation == PrimaryNotesInbox {
 		inbox := filepath.Join(v.root, resolveFolderPath(FolderInbox, normalized.SystemFolderPaths))
 		if err := os.MkdirAll(inbox, v.dirMode); err != nil {
@@ -1729,6 +1759,7 @@ func (v *Vault) WriteNoteIfUnchanged(rel, body, baseSha256 string) (NoteMeta, er
 	if err := writeFileAtomic(abs, data, v.fileMode, v.dirMode); err != nil {
 		return NoteMeta{}, err
 	}
+	v.syncTouched(abs)
 	v.invalidateTextSearchCache()
 	folder, _ := v.folderOf(abs)
 	meta, err := v.readMeta(folder, abs)
@@ -1885,6 +1916,7 @@ func (v *Vault) writeNoteCommentsLocked(rel string, comments []NoteComment) ([]N
 		if err := os.Remove(abs); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
+		v.syncTouched(abs)
 		return []NoteComment{}, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(abs), v.dirMode); err != nil {
@@ -1900,6 +1932,7 @@ func (v *Vault) writeNoteCommentsLocked(rel string, comments []NoteComment) ([]N
 	if err := os.WriteFile(abs, data, v.fileMode); err != nil {
 		return nil, err
 	}
+	v.syncTouched(abs)
 	return normalized, nil
 }
 
@@ -1917,6 +1950,7 @@ func (v *Vault) removeNoteCommentsLocked(rel string) error {
 	if err := os.Remove(abs); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	v.syncTouched(abs)
 	return nil
 }
 
@@ -1953,11 +1987,19 @@ func (v *Vault) moveNoteCommentsLocked(oldRel, nextRel string) error {
 		if _, err := v.writeNoteCommentsLocked(nextRel, append(existing, moving...)); err != nil {
 			return err
 		}
-		return os.Remove(oldAbs)
+		if err := os.Remove(oldAbs); err != nil {
+			return err
+		}
+		v.syncTouched(oldAbs)
+		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return os.Rename(oldAbs, nextAbs)
+	if err := os.Rename(oldAbs, nextAbs); err != nil {
+		return err
+	}
+	v.syncMoved(oldAbs, nextAbs)
+	return nil
 }
 
 func (v *Vault) copyNoteCommentsLocked(sourceRel, nextRel string) error {
@@ -2047,6 +2089,7 @@ func (v *Vault) CreateNote(folder NoteFolder, title, subpath string) (NoteMeta, 
 	if err := writeNewFile(abs, fmt.Appendf(nil, "# %s\n\n", stem), v.fileMode); err != nil {
 		return NoteMeta{}, err
 	}
+	v.syncTouched(abs)
 	v.invalidateTextSearchCache()
 	return v.readMeta(folder, abs)
 }
@@ -2084,6 +2127,7 @@ func (v *Vault) CreateExcalidraw(folder NoteFolder, title, subpath string) (Note
 	if err := writeNewFile(abs, []byte(emptyExcalidrawJSON), v.fileMode); err != nil {
 		return NoteMeta{}, err
 	}
+	v.syncTouched(abs)
 	v.invalidateTextSearchCache()
 	return v.readMeta(folder, abs)
 }
@@ -2364,6 +2408,7 @@ func (v *Vault) DuplicateNote(rel string) (NoteMeta, error) {
 	if err := copyFile(abs, newAbs, v.fileMode); err != nil {
 		return NoteMeta{}, err
 	}
+	v.syncTouched(newAbs)
 	v.invalidateTextSearchCache()
 	meta, err := v.readMeta(folder, newAbs)
 	if err != nil {
@@ -2498,6 +2543,10 @@ func (v *Vault) relocateFolderTrees(moves [][2]string, persistSettings func() er
 	if err := persistSettings(); err != nil {
 		return rollback(err)
 	}
+	// One move per item, each keeping its id: a rename, trash, archive or
+	// folder rename. A delete moves into a scratch folder under .zennotes/
+	// that sync does not carry, so its items come out as deletes.
+	v.syncMovedMany(present)
 	return nil
 }
 
@@ -2549,7 +2598,7 @@ func (v *Vault) RenameFolder(folder NoteFolder, oldSub, newSub string) (string, 
 		next.Tasks = rewriteTasksFoldersForRename(settings.Tasks, filepath.ToSlash(oldVaultRel), filepath.ToSlash(newVaultRel))
 		// So does the template folder (#1024).
 		next.Templates = rewriteTemplateFolderForRename(settings.Templates, filepath.ToSlash(oldVaultRel), filepath.ToSlash(newVaultRel))
-		_, err := v.SetSettings(next)
+		_, err := v.setSettingsLocked(next)
 		return err
 	})
 	if err != nil {
@@ -2594,7 +2643,7 @@ func (v *Vault) DeleteFolder(folder NoteFolder, subpath string) error {
 		next := settings
 		next.FolderIcons = removeFolderIcons(settings.FolderIcons, folder, subpath)
 		next.FolderColors = removeFolderColors(settings.FolderColors, folder, subpath)
-		_, err := v.SetSettings(next)
+		_, err := v.setSettingsLocked(next)
 		return err
 	})
 	if err != nil {
@@ -2626,8 +2675,10 @@ func (v *Vault) DuplicateFolder(folder NoteFolder, subpath string) (string, erro
 		return "", err
 	}
 	if err := copyDir(src, dst, v.fileMode, v.dirMode); err != nil {
+		v.syncTreeTouched(dst)
 		return "", err
 	}
+	v.syncTreeTouched(dst)
 	v.invalidateTextSearchCache()
 	settings, err := v.GetSettings()
 	if err != nil {
@@ -2642,7 +2693,7 @@ func (v *Vault) DuplicateFolder(folder NoteFolder, subpath string) (string, erro
 	next := settings
 	next.FolderIcons = duplicateFolderIcons(settings.FolderIcons, folder, subpath, relPath)
 	next.FolderColors = duplicateFolderColors(settings.FolderColors, folder, subpath, relPath)
-	_, err = v.SetSettings(next)
+	_, err = v.setSettingsLocked(next)
 	if err != nil {
 		return "", err
 	}
@@ -3032,6 +3083,9 @@ func (v *Vault) ImportAsset(notePath, filename string, body io.Reader) (Imported
 		_ = os.Remove(abs)
 		return ImportedAsset{}, err
 	}
+	// Text attachments (an SVG, a CSV) are text items to sync; binaries are
+	// left out until attachments join the offline copy.
+	v.syncTouched(abs)
 	relFromRoot, err := filepath.Rel(v.root, abs)
 	if err != nil {
 		return ImportedAsset{}, err
@@ -3116,6 +3170,7 @@ func (v *Vault) renameAssetFile(rel, nextName string) (AssetMeta, string, error)
 		} else if err := os.Rename(srcAbs, destAbs); err != nil {
 			return AssetMeta{}, "", err
 		}
+		v.syncMoved(srcAbs, destAbs)
 	}
 	meta, err := v.assetMetaForAbs(destAbs)
 	return meta, before.Path, err
@@ -3171,6 +3226,7 @@ func (v *Vault) moveAssetFile(rel, targetDir string) (AssetMeta, string, error) 
 	if err := os.Rename(srcAbs, destAbs); err != nil {
 		return AssetMeta{}, "", err
 	}
+	v.syncMoved(srcAbs, destAbs)
 	meta, err := v.assetMetaForAbs(destAbs)
 	return meta, before.Path, err
 }
