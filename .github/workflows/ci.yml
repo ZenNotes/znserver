@@ -63,7 +63,10 @@ jobs:
           ref="$(tr -d '[:space:]' < integration/cloud-engine/testdata/zennotes-ref)"
           git init -q "$RUNNER_TEMP/zennotes"
           git -C "$RUNNER_TEMP/zennotes" remote add origin https://github.com/ZenNotes/zennotes.git
-          git -C "$RUNNER_TEMP/zennotes" sparse-checkout set --no-cone /packages/shared-domain/src/ /packages/bridge-contract/src/ /apps/desktop/src/main/
+          # Cone-mode paths, never a leading slash: Git Bash on Windows rewrites
+          # an argument starting with / into a Windows path, and the checkout
+          # comes out empty.
+          git -C "$RUNNER_TEMP/zennotes" sparse-checkout set packages/shared-domain/src packages/bridge-contract/src apps/desktop/src/main
           git -C "$RUNNER_TEMP/zennotes" fetch -q --depth 1 --filter=blob:none origin "$ref"
           git -C "$RUNNER_TEMP/zennotes" checkout -q FETCH_HEAD
       - run: npm ci --no-audit --no-fund
