@@ -1,0 +1,13 @@
+{
+  "name": "znserver-cloud-engine-test",
+  "private": true,
+  "type": "module",
+  "description": "Drives ZenNotes Cloud's sync engine (CloudSyncCoordinator) against a real znserver. See ../engine_test.go.",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node build.mjs && node --test --test-reporter=spec dist/engine.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

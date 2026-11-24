@@ -227,6 +227,7 @@ func (v *Vault) WriteWorkflow(input WriteWorkflowInput) (WorkflowFile, error) {
 	if err := writeFileAtomic(abs, []byte(input.Raw), v.fileMode, v.dirMode); err != nil {
 		return WorkflowFile{}, err
 	}
+	defer v.syncReplaced(previous, abs)
 	if previous != "" && previous != abs {
 		// On a case-insensitive filesystem two differently-cased paths can name
 		// the SAME file, and writeFileAtomic just landed the new content on it;
@@ -257,6 +258,7 @@ func (v *Vault) DeleteWorkflow(sourcePath string) error {
 	if err := os.Remove(abs); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	v.syncTouched(abs)
 	return nil
 }
 
@@ -528,6 +530,9 @@ func validatePreparedWorkflowOps(ops []json.RawMessage) (int, error) {
 func (v *Vault) ApplyPreparedWorkflow(input PreparedWorkflowRun) (WorkflowRunReceipt, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	// A run writes, moves and removes notes, their sidecars and its own
+	// ledger; one reconcile afterwards records all of it, moves included.
+	defer v.syncRecordLocked(syncScope{all: true})
 	startedAt := time.Now().UnixMilli()
 	workflowID := strings.TrimSpace(input.WorkflowID)
 	if workflowID == "" {
@@ -729,6 +734,7 @@ func (v *Vault) pruneWorkflowRunsLocked() {
 func (v *Vault) UndoWorkflowRun(runID string) (WorkflowUndoResult, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	defer v.syncRecordLocked(syncScope{all: true})
 	ledger, err := v.readWorkflowLedgerLocked(runID)
 	if errors.Is(err, os.ErrNotExist) {
 		return WorkflowUndoResult{}, fmt.Errorf("%w: unknown workflow run %s", ErrInvalidWorkflow, runID)
@@ -826,6 +832,7 @@ func (v *Vault) ListWorkflowRuns() ([]WorkflowRunSummary, error) {
 func (v *Vault) DeleteWorkflowRuns(workflowID string) (int, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	defer v.syncRecordLocked(syncScope{all: true})
 	runsDir, err := v.resolveWorkflowRunsDir()
 	if err != nil {
 		return 0, err

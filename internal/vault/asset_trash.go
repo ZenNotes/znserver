@@ -82,6 +82,7 @@ func (v *Vault) DuplicateAsset(rel string) (AssetMeta, error) {
 	if err := copyFile(srcAbs, destAbs, v.fileMode); err != nil {
 		return AssetMeta{}, err
 	}
+	v.syncTouched(destAbs)
 	return v.assetMetaForAbs(destAbs)
 }
 
@@ -135,6 +136,7 @@ func (v *Vault) DeleteAsset(rel string) (DeletedAsset, error) {
 		_ = os.RemoveAll(trashDir)
 		return DeletedAsset{}, err
 	}
+	v.syncTouched(srcAbs)
 	return deleted, nil
 }
 
@@ -240,6 +242,7 @@ func (v *Vault) RestoreDeletedAsset(deleted DeletedAsset) (AssetMeta, error) {
 	if err := os.Rename(srcAbs, finalAbs); err != nil {
 		return AssetMeta{}, err
 	}
+	v.syncTouched(finalAbs)
 	if err := os.RemoveAll(trashDir); err != nil {
 		return AssetMeta{}, err
 	}

@@ -15,9 +15,12 @@ import (
 const (
 	internalVaultDir      = ".zennotes"
 	vaultSettingsFilePath = ".zennotes/vault.json"
-	noteCommentsPrefix    = ".zennotes/comments/"
-	noteCommentsSuffix    = ".comments.json"
-	templatesPrefix       = ".zennotes/templates/"
+	// The sync protocol's own store: a log and a blob folder per hash prefix,
+	// none of it a vault change, and each folder would cost an inotify watch.
+	syncStoreRelDir    = ".zennotes/sync"
+	noteCommentsPrefix = ".zennotes/comments/"
+	noteCommentsSuffix = ".comments.json"
+	templatesPrefix    = ".zennotes/templates/"
 )
 
 // Watcher recursively watches the vault root and fans out change
@@ -107,6 +110,9 @@ func Start(root string) (*Watcher, error) {
 		if d.IsDir() {
 			name := d.Name()
 			if path != root && strings.HasPrefix(name, ".") && name != internalVaultDir {
+				return filepath.SkipDir
+			}
+			if isSyncStorePath(root, path) {
 				return filepath.SkipDir
 			}
 			// Don't discard the error: inotify can be exhausted or restricted
@@ -275,6 +281,15 @@ func (w *Watcher) relativePath(absPath string) string {
 	return filepath.ToSlash(rel)
 }
 
+func isSyncStorePath(root, absPath string) bool {
+	rel, err := filepath.Rel(root, absPath)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	return rel == syncStoreRelDir || strings.HasPrefix(rel, syncStoreRelDir+"/")
+}
+
 func (w *Watcher) isVaultSettingsPath(absPath string) bool {
 	return w.relativePath(absPath) == vaultSettingsFilePath
 }
@@ -313,7 +328,7 @@ func (w *Watcher) watchSubdirs(dir string) {
 			return nil
 		}
 		name := d.Name()
-		if strings.HasPrefix(name, ".") && name != internalVaultDir {
+		if (strings.HasPrefix(name, ".") && name != internalVaultDir) || isSyncStorePath(w.root, path) {
 			return filepath.SkipDir
 		}
 		if _, ok := w.dirs[path]; ok {
@@ -337,6 +352,9 @@ func (w *Watcher) handle(ev fsnotify.Event) {
 		return
 	}
 	if strings.HasPrefix(base, ".") && !w.isVaultSettingsPath(ev.Name) && base != internalVaultDir {
+		return
+	}
+	if isSyncStorePath(w.root, ev.Name) {
 		return
 	}
 	info, statErr := os.Stat(ev.Name)

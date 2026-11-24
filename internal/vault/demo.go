@@ -85,6 +85,7 @@ func loadDemoTour() (*demoTour, error) {
 func (v *Vault) GenerateDemoTour() (DemoTourResult, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	defer v.syncRecordLocked(syncScope{all: true})
 	tour, err := loadDemoTour()
 	if err != nil {
 		return DemoTourResult{}, err
@@ -130,6 +131,7 @@ func (v *Vault) GenerateDemoTour() (DemoTourResult, error) {
 func (v *Vault) RemoveDemoTour() (DemoTourResult, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	defer v.syncRecordLocked(syncScope{all: true})
 	tour, err := loadDemoTour()
 	if err != nil {
 		return DemoTourResult{}, err

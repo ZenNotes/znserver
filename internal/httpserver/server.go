@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -59,6 +60,13 @@ type Server struct {
 	mcpResponseBytes int64
 	// self is the finished router, which the MCP tools call in-process.
 	self http.Handler
+
+	// The sync maintenance loop (sync.go), once StartSyncMaintenance runs.
+	// Guarded by syncMaintMu, never by mu.
+	syncMaintMu     sync.Mutex
+	syncCtx         context.Context
+	syncCancel      context.CancelFunc
+	syncVaultCancel func()
 }
 
 func init() {
@@ -109,11 +117,7 @@ func (s *Server) currentConfig() config.Config {
 
 func (s *Server) switchVaultRoot(nextPath string) (*vault.Vault, error) {
 	cfg := s.currentConfig()
-	nextVault, err := vault.New(nextPath, vault.Options{
-		FileMode:      cfg.VaultFileMode,
-		DirMode:       cfg.VaultDirMode,
-		MaxAssetBytes: cfg.MaxAssetBytes,
-	})
+	nextVault, err := vault.New(nextPath, VaultOptions(cfg))
 	if err != nil {
 		return nil, err
 	}
@@ -139,8 +143,21 @@ func (s *Server) switchVaultRoot(nextPath string) (*vault.Vault, error) {
 	if prevWatcher != nil {
 		prevWatcher.Close()
 	}
+	s.restartSyncMaintenance(nextVault, nextWatcher)
 	_ = config.SaveHost(cfg)
 	return nextVault, nil
+}
+
+// VaultOptions are the vault settings a config asks for, the same at startup
+// and on a vault switch.
+func VaultOptions(cfg config.Config) vault.Options {
+	return vault.Options{
+		FileMode:         cfg.VaultFileMode,
+		DirMode:          cfg.VaultDirMode,
+		MaxAssetBytes:    cfg.MaxAssetBytes,
+		MaxNoteBytes:     cfg.MaxNoteBytes,
+		SyncLogRetention: cfg.SyncLogRetention,
+	}
 }
 
 func (s *Server) Router() http.Handler {
@@ -274,6 +291,10 @@ func (s *Server) registerProtectedRoutes(r chi.Router) {
 	r.Post("/workflows/runs/delete", s.deleteWorkflowRuns)
 
 	r.Get("/watch", s.watchWS)
+
+	r.Get("/sync/manifest", s.syncManifest)
+	r.Get("/sync/changes", s.syncChanges)
+	r.Post("/sync/mutations", s.syncMutations)
 }
 
 func platformName() string {
@@ -507,6 +528,12 @@ func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
 		// ignore the field and write unconditionally, so a client that sends
 		// it there gets exactly what it got before.
 		"supportsConditionalNoteWrites": true,
+		// The offline copy's sync protocol (#1108): /api/sync/manifest,
+		// /api/sync/changes and /api/sync/mutations, the subset of ZenNotes
+		// Cloud's sync API its engine needs to keep a mirror of this vault.
+		// A number, the protocol's version, so a later change can raise it;
+		// absent on servers without it.
+		"supportsSync": syncProtocolVersion,
 		// Says out loud that a missing file answers 404 rather than 500.
 		// Databases are composed from file reads where "absent" and "failed"
 		// mean opposite things (see remote-absence.ts), and a server that
