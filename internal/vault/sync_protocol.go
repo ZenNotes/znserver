@@ -76,6 +76,18 @@ type SyncChangesPage struct {
 	HasMore bool         `json:"has_more"`
 }
 
+// SyncRevision is one revision of an item, Cloud's CloudSyncRevision minus
+// encryption and content references. The engine reads it as a conflict's
+// base, so a note edited both here and in a copy can merge line by line.
+type SyncRevision struct {
+	ItemID   string       `json:"item_id"`
+	Revision int64        `json:"revision"`
+	Path     string       `json:"path"`
+	Kind     string       `json:"kind"`
+	Deleted  bool         `json:"deleted"`
+	Content  *SyncContent `json:"content,omitempty"`
+}
+
 type SyncMutation struct {
 	OperationID  string       `json:"operation_id"`
 	ItemID       string       `json:"item_id"`
@@ -134,6 +146,11 @@ func (e *SyncValidationError) add(field, message string) {
 	}
 	e.Fields[field] = append(e.Fields[field], message)
 }
+
+// ErrSyncRevisionNotRetained answers a revision read the store cannot answer:
+// an unknown item, a revision it never reached, or one whose record or bytes
+// are gone with the retention window. The engine keeps that conflict two-way.
+var ErrSyncRevisionNotRetained = errors.New("the server no longer keeps this revision")
 
 // ErrSyncRetry answers a read that met a file changing under it.
 var ErrSyncRetry = errors.New("the vault changed while it was being read; sync again")
@@ -312,11 +329,11 @@ func syncTextContent(data []byte, sha, media string) *SyncContent {
 }
 
 // SyncManifest lists every synced item, sorted by path, one page at a time,
-// each with its content inline. Until revision reads exist (phase 4) the
-// engine has no other way to fetch an item's bytes, and one of its paths
-// (settling a moved arrival) asks for the manifest without content and
-// still needs them. includeContent is accepted for Cloud's spelling of the
-// request and changes nothing.
+// each with its content inline. One of the engine's paths (settling a moved
+// arrival) asks for the manifest without content and still needs the bytes,
+// and a client of a server without revision reads has no other way to get
+// them. includeContent is accepted for Cloud's spelling of the request and
+// changes nothing.
 // The first page reconciles first, so the list starts from the disk as it is.
 // Every page carries the cursor; a client that sees it move between pages
 // starts over, which is how it gets one consistent list.
@@ -423,6 +440,111 @@ func (v *Vault) SyncChanges(after int64, limit int) (SyncChangesPage, error) {
 		out.Cursor = rec.Seq
 	}
 	out.HasMore = i < len(s.changes)
+	return out, nil
+}
+
+// SyncReadRevision answers one revision of an item: its path then, whether it
+// was the item's delete, and otherwise its bytes. A move's bytes are the ones
+// it carried along. The log says what each revision was, and each record
+// names the bytes the item held just before it, so a revision with no record
+// of its own (revision 1 of a file the store started with, or one the prune
+// dropped) still answers while the record after it is retained, or while it
+// is the item's current revision. The bytes come from the blob, or from the
+// file while it still holds them, and always match the sha256 sent with them.
+func (v *Vault) SyncReadRevision(itemID string, revision int64) (SyncRevision, error) {
+	if itemID == "" || revision < 1 {
+		return SyncRevision{}, ErrSyncRevisionNotRetained
+	}
+	if err := v.syncReconcileBeforeRead(false); err != nil {
+		return SyncRevision{}, err
+	}
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	s := v.sync
+	if s == nil {
+		return SyncRevision{}, ErrSyncUnavailable
+	}
+	// The log is in sequence order, and an item's revisions only go up, so
+	// the last upsert seen at or before the revision is the one that wrote
+	// its bytes.
+	var at, next, upsert *syncRecord
+	upsertAfter := false
+	for i := range s.changes {
+		rec := &s.changes[i]
+		if rec.ItemID != itemID {
+			continue
+		}
+		switch rec.Revision {
+		case revision:
+			at = rec
+		case revision + 1:
+			next = rec
+		}
+		if rec.Type == "upsert" {
+			if rec.Revision <= revision {
+				upsert = rec
+			} else {
+				upsertAfter = true
+			}
+		}
+	}
+	item := s.items[itemID]
+	out := SyncRevision{ItemID: itemID, Revision: revision, Kind: "text"}
+	var sha, media string
+	switch {
+	case at != nil && at.Type == "delete":
+		out.Path, out.Deleted = at.Path, true
+		return out, nil
+	case at != nil && at.Type == "upsert":
+		out.Path, sha, media = at.Path, at.Sha256, at.MediaType
+	case at != nil:
+		// A move: the bytes did not change. A move recorded by a server with
+		// revision reads names them; an older one leaves them to the upsert
+		// before it, or, with none left in the log, to the item's current
+		// bytes if nothing has written over them since.
+		out.Path = at.Path
+		switch {
+		case at.Sha256 != "":
+			sha, media = at.Sha256, at.MediaType
+		case upsert != nil:
+			sha, media = upsert.Sha256, upsert.MediaType
+		case item != nil && !upsertAfter:
+			sha, media = item.Sha256, item.MediaType
+		default:
+			return SyncRevision{}, ErrSyncRevisionNotRetained
+		}
+	case next != nil:
+		// No record of its own: the next one says where the item was and
+		// what it held.
+		out.Path = next.Path
+		if next.PreviousPath != "" {
+			out.Path = next.PreviousPath
+		}
+		if next.Type == "move" {
+			sha = next.Sha256
+		} else {
+			sha = next.BaseSha256
+		}
+		if sha == "" {
+			return SyncRevision{}, ErrSyncRevisionNotRetained
+		}
+		media = syncMediaType(out.Path)
+	case item != nil && item.Revision == revision:
+		out.Path, sha, media = item.Path, item.Sha256, item.MediaType
+	default:
+		return SyncRevision{}, ErrSyncRevisionNotRetained
+	}
+	data, err := s.readBlob(sha)
+	if err != nil {
+		if item == nil || item.Sha256 != sha {
+			return SyncRevision{}, ErrSyncRevisionNotRetained
+		}
+		data, err = os.ReadFile(filepath.Join(v.root, filepath.FromSlash(item.Path)))
+		if err != nil || contentSha256(data) != sha {
+			return SyncRevision{}, ErrSyncRevisionNotRetained
+		}
+	}
+	out.Content = syncTextContent(data, sha, media)
 	return out, nil
 }
 

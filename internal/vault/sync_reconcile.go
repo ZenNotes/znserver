@@ -457,10 +457,43 @@ func (v *Vault) syncReconcileLocked(scope syncScope) error {
 	if err := s.flush(); err != nil {
 		return err
 	}
+	if scope.all && !s.blobsChecked {
+		v.syncBackfillBlobs()
+	}
 	if scope.all && s.dirty {
 		return s.writeSnapshot()
 	}
 	return nil
+}
+
+// syncBackfillBlobs gives every item's current version a blob, once per load.
+// Only a store from before that rule (or one whose blob write failed) has
+// any to write; for the rest this is a stat per item. A file that no longer
+// holds the bytes the index names is skipped: the next reconcile records it
+// as an edit, with a blob of its own.
+func (v *Vault) syncBackfillBlobs() {
+	s := v.sync
+	failed := 0
+	var firstErr error
+	for _, item := range s.items {
+		if s.hasBlob(item.Sha256) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(v.root, filepath.FromSlash(item.Path)))
+		if err != nil || contentSha256(data) != item.Sha256 {
+			continue
+		}
+		if err := s.writeBlob(item.Sha256, data); err != nil {
+			if failed == 0 {
+				firstErr = err
+			}
+			failed++
+		}
+	}
+	if failed > 0 {
+		log.Printf("sync: could not keep the current version of %d files for revision reads (%v); trying again at the next reconcile", failed, firstErr)
+	}
+	s.blobsChecked = failed == 0
 }
 
 // syncEmitArrival records obs as the new state of item: a move when only the

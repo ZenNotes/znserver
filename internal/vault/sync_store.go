@@ -31,9 +31,13 @@ import (
 //	             carry the answer an operation got, so a repeated operation_id
 //	             answers the same. Both are kept for the retention window
 //	             (90 days by default); `floor` is the last sequence pruned.
-//	blobs/       the bytes of every upsert the log still holds, gzipped and
-//	             named by sha256, so the change feed can serve any retained
-//	             revision. They are also what phase 4's revision reads use.
+//	blobs/       the bytes of every upsert the log still holds and of every
+//	             item's current version, gzipped and named by sha256, so the
+//	             change feed and revision reads (supportsSync 2) can serve
+//	             any retained revision. The current versions matter most: a
+//	             conflict's base is the revision a copy last synced, often
+//	             one the store started with or one older than the log, and
+//	             by the time an edit is noticed the file no longer holds it.
 //	.gitignore   `*`, for vaults kept in Git.
 //
 // The log is the authority; index.json is a checkpoint that saves replaying
@@ -91,11 +95,18 @@ type syncRecord struct {
 	Path         string `json:"path,omitempty"`
 	PreviousPath string `json:"previous_path,omitempty"`
 	Revision     int64  `json:"revision,omitempty"`
-	Sha256       string `json:"sha256,omitempty"`
-	ByteLength   int64  `json:"byte_length,omitempty"`
-	MediaType    string `json:"media_type,omitempty"`
-	MtimeNs      int64  `json:"mtime_ns,omitempty"`
-	OperationID  string `json:"op,omitempty"`
+	// The bytes the item holds as of this record: an upsert's, and (from
+	// revision reads on) the bytes a move carried along.
+	Sha256 string `json:"sha256,omitempty"`
+	// The bytes the item held just before an upsert or a delete (from
+	// revision reads on), so the revision before it can be read even when it
+	// has no record of its own, as revision 1 of a file the store started
+	// with does not.
+	BaseSha256  string `json:"base_sha256,omitempty"`
+	ByteLength  int64  `json:"byte_length,omitempty"`
+	MediaType   string `json:"media_type,omitempty"`
+	MtimeNs     int64  `json:"mtime_ns,omitempty"`
+	OperationID string `json:"op,omitempty"`
 	// Conflict answers only.
 	Code            string  `json:"code,omitempty"`
 	CurrentRevision *int64  `json:"current_revision,omitempty"`
@@ -138,6 +149,10 @@ type syncStore struct {
 
 	lastReconcile time.Time
 	lastPrune     time.Time
+	// blobsChecked is set once a full reconcile has made sure every item's
+	// current version has a blob, so a store from before that rule (server
+	// 2.91.1) fills them in once per load rather than on every reconcile.
+	blobsChecked bool
 }
 
 func newSyncStoreShell(vaultRoot string, fileMode, dirMode fs.FileMode, maxText int64, retention time.Duration) *syncStore {
@@ -339,11 +354,16 @@ func (s *syncStore) initialize(v *Vault) error {
 		if err := obs.hash(); err != nil || !obs.text {
 			continue
 		}
-		obs.data = nil
 		if _, taken := s.byKey[syncPathKey(p)]; taken {
 			log.Printf("sync: %s is the same name as another file on a case-insensitive disk; it is not synced", p)
+			obs.data = nil
 			continue
 		}
+		// The bytes every copy starts from, kept so a revision read can
+		// answer revision 1 after the file changes. A failure here is not
+		// fatal: the first full reconcile fills in what is missing.
+		_ = s.writeBlob(obs.sha, obs.data)
+		obs.data = nil
 		s.indexItem(&syncItem{
 			ItemID: randomSyncID(), Path: p, Revision: 1, Sha256: obs.sha,
 			ByteLength: obs.size, MediaType: syncMediaType(p), MtimeNs: obs.trustedMtime(),
@@ -431,6 +451,13 @@ func (s *syncStore) applyRecord(rec syncRecord) {
 // emit records a change: it gets the next sequence, lands in the index at
 // once, and reaches disk with the batch at flush.
 func (s *syncStore) emit(rec syncRecord) syncRecord {
+	if prior := s.items[rec.ItemID]; prior != nil {
+		if rec.Type == "move" {
+			rec.Sha256, rec.MediaType = prior.Sha256, prior.MediaType
+		} else {
+			rec.BaseSha256 = prior.Sha256
+		}
+	}
 	s.seq++
 	rec.Kind, rec.Seq = "c", s.seq
 	if rec.At == 0 {
@@ -535,6 +562,11 @@ func (s *syncStore) writeBlob(sha string, data []byte) error {
 	return writeFileAtomic(target, buf.Bytes(), s.fileMode, s.dirMode)
 }
 
+func (s *syncStore) hasBlob(sha string) bool {
+	_, err := os.Stat(s.blobPath(sha))
+	return err == nil
+}
+
 func (s *syncStore) readBlob(sha string) ([]byte, error) {
 	f, err := os.Open(s.blobPath(sha))
 	if err != nil {
@@ -559,7 +591,7 @@ func (s *syncStore) readBlob(sha string) ([]byte, error) {
 // --- Retention ---
 
 // prune drops log records older than the retention window, then the blobs no
-// retained record names. The index is checkpointed first, so it never needs
+// retained record and no current item names. The index is checkpointed first, so it never needs
 // a record that is gone.
 func (s *syncStore) prune(now time.Time) error {
 	cutoff := now.Add(-s.retention).UnixMilli()
@@ -611,9 +643,15 @@ func (s *syncStore) prune(now time.Time) error {
 func (s *syncStore) pruneBlobs() error {
 	keep := map[string]struct{}{}
 	for _, rec := range s.changes {
-		if rec.Type == "upsert" && rec.Sha256 != "" {
-			keep[rec.Sha256] = struct{}{}
+		// What a retained record names, before and after it.
+		for _, sha := range []string{rec.Sha256, rec.BaseSha256} {
+			if sha != "" {
+				keep[sha] = struct{}{}
+			}
 		}
+	}
+	for _, item := range s.items {
+		keep[item.Sha256] = struct{}{}
 	}
 	root := filepath.Join(s.dir, syncBlobsDir)
 	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {

@@ -353,13 +353,18 @@ since (another device saved, or someone edited the file on disk) or is gone,
 the server answers 409 and leaves the file alone; read it again and decide.
 Without `baseSha256` a write always wins, as it always has.
 
-**Offline copies.** `/api/sync/manifest`, `/api/sync/changes` and
-`/api/sync/mutations` (advertised as `supportsSync` in `/api/capabilities`) let
-a client keep a copy of the vault that works while the server is away and
-catches up when it is back. They carry notes and other text files; attachments
-are not part of a copy yet. What the server needs for that lives in the vault
-at `.zennotes/sync/`: an id for the vault, a revision for each file, and a log
-of changes with their text, kept for 90 days. It is created the first time a
+**Offline copies.** `/api/sync/manifest`, `/api/sync/changes`,
+`/api/sync/revision` and `/api/sync/mutations` (advertised as `supportsSync` in
+`/api/capabilities`: 1 for the first three without revision reads, 2 with
+`/api/sync/revision`) let a client keep a copy of the vault that works while
+the server is away and catches up when it is back. They carry notes and other
+text files; attachments are not part of a copy yet. When a note changed both
+on the server and in a copy, the copy reads the version they last agreed on
+from `/api/sync/revision` and merges edits to different lines on its own;
+only edits to the same lines wait for review. What the server needs for that
+lives in the vault at `.zennotes/sync/`: an id for the vault, a revision for
+each file, a log of changes kept for 90 days, and the text of every revision
+that log names plus each file's current text. It is created the first time a
 copy connects, moves with the vault, and keeps itself out of Git with its own
 `.gitignore`. Edits made outside the server (a shell, `git pull`, Syncthing)
 are picked up within seconds and are never written over. Deleting
